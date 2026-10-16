@@ -21,9 +21,7 @@ Clip trimClipStart(Clip clip, Duration newTimelineStart) {
   final maxStart = clip.timelineEnd - minClipDuration;
   final start = _clampDuration(newTimelineStart, minStart, maxStart);
   final delta = start - clip.timelineStart;
-  return Clip(
-    id: clip.id,
-    source: clip.source,
+  return clip.copyWith(
     timelineStart: start,
     sourceStart: clip.sourceStart + delta,
     duration: clip.duration - delta,
@@ -38,13 +36,7 @@ Clip trimClipEnd(Clip clip, Duration newTimelineEnd) {
   final minEnd = clip.timelineStart + minClipDuration;
   final maxEnd = clip.timelineStart + (clip.source.duration - clip.sourceStart);
   final end = _clampDuration(newTimelineEnd, minEnd, maxEnd);
-  return Clip(
-    id: clip.id,
-    source: clip.source,
-    timelineStart: clip.timelineStart,
-    sourceStart: clip.sourceStart,
-    duration: end - clip.timelineStart,
-  );
+  return clip.copyWith(duration: end - clip.timelineStart);
 }
 
 /// Splits [clip] into two clips at timeline position [at].
@@ -56,19 +48,17 @@ Clip trimClipEnd(Clip clip, Duration newTimelineEnd) {
   if (at <= clip.timelineStart || at >= clip.timelineEnd) {
     throw ArgumentError('Split point must be strictly inside the clip');
   }
-  final first = Clip(
-    id: clip.id,
-    source: clip.source,
-    timelineStart: clip.timelineStart,
-    sourceStart: clip.sourceStart,
+  final first = clip.copyWith(
     duration: at - clip.timelineStart,
+    // Splitting breaks edge transitions; the inner edges start clean.
+    transitionOut: const ClipTransition(),
   );
-  final second = Clip(
+  final second = clip.copyWith(
     id: '${clip.id}-b',
-    source: clip.source,
     timelineStart: at,
     sourceStart: clip.sourceStart + (at - clip.timelineStart),
     duration: clip.timelineEnd - at,
+    transitionIn: const ClipTransition(),
   );
   return (first, second);
 }
@@ -82,11 +72,5 @@ Clip? tryMergeClips(Clip a, Clip b) {
   if (a.source.id != b.source.id) return null;
   if (a.timelineEnd != b.timelineStart) return null;
   if (a.sourceStart + a.duration != b.sourceStart) return null;
-  return Clip(
-    id: a.id,
-    source: a.source,
-    timelineStart: a.timelineStart,
-    sourceStart: a.sourceStart,
-    duration: a.duration + b.duration,
-  );
+  return a.copyWith(duration: a.duration + b.duration);
 }

@@ -197,8 +197,116 @@ class _EditorScreenState extends State<EditorScreen> {
         TimelineProject(tracks: tracks, overlays: _project.overlays));
   }
 
-  Future<void> _export() async {
-    const config = ExportConfig(outputPath: '/tmp/open_video_editor_out.mp4');
+  /// Shows a dialog to input overlay text. Returns null when cancelled.
+  Future<String?> _showTextDialog({String? initial}) async {
+    final controller = TextEditingController(text: initial);
+    final result = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(initial == null ? 'Tambah teks' : 'Edit teks'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: 'Ketik teks...'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Batal'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, controller.text),
+            child: const Text('Simpan'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    return result;
+  }
+
+  Future<void> _addTextOverlay() async {
+    final text = await _showTextDialog();
+    if (text == null || text.trim().isEmpty) return;
+    final start = _player.position;
+    final overlay = TextOverlay(
+      id: 'txt-${DateTime.now().millisecondsSinceEpoch}',
+      text: text.trim(),
+      start: start,
+      end: start + const Duration(seconds: 3),
+    );
+    await _updateProject(TimelineProject(
+      tracks: _project.tracks,
+      overlays: [..._project.overlays, overlay],
+    ));
+  }
+
+  Future<void> _onOverlayTap(TextOverlay overlay) async {
+    final action = await showDialog<String>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: Text('"$overlay.text"'.length > 24
+            ? '"${overlay.text.substring(0, 24)}..."'
+            : '"${overlay.text}"'),
+        children: [
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(ctx, 'edit'),
+            child: const Text('Edit'),
+          ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(ctx, 'delete'),
+            child:
+                const Text('Hapus', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+    if (action == 'delete') {
+      await _updateProject(TimelineProject(
+        tracks: _project.tracks,
+        overlays:
+            _project.overlays.where((o) => o.id != overlay.id).toList(),
+      ));
+    } else if (action == 'edit') {
+      final text = await _showTextDialog(initial: overlay.text);
+      if (text == null || text.trim().isEmpty) return;
+      await _updateProject(TimelineProject(
+        tracks: _project.tracks,
+        overlays: _project.overlays
+            .map((o) =>
+                o.id == overlay.id ? o.copyWith(text: text.trim()) : o)
+            .toList(),
+      ));
+    }
+  }
+
+  Future<void> _setClipFilter(VideoFilter filter) async {
+    final found = _selectedClipId == null ? null : _findClip(_selectedClipId!);
+    if (found == null) return;
+    final (ti, ci, clip) = found;
+    await _replaceClip(ti, ci, clip.copyWith(filter: filter));
+  }
+
+  Future<void> _toggleFade(bool isIn) async {
+    final found = _selectedClipId == null ? null : _findClip(_selectedClipId!);
+    if (found == null) return;
+    final (ti, ci, clip) = found;
+    final current = isIn ? clip.transitionIn : clip.transitionOut;
+    const oneSec = Duration(seconds: 1);
+    final updated = current.isEnabled
+        ? const ClipTransition()
+        : const ClipTransition(type: TransitionType.fade, duration: oneSec);
+    await _replaceClip(
+      ti,
+      ci,
+      clip.copyWith(
+        transitionIn: isIn ? updated : clip.transitionIn,
+        transitionOut: isIn ? clip.transitionOut : updated,
+      ),
+    );
+  }
+
+  Future<void> _export() async {    const config = ExportConfig(outputPath: '/tmp/open_video_editor_out.mp4');
     try {
       await _engine.exportProject(
         _project,
@@ -229,19 +337,86 @@ class _EditorScreenState extends State<EditorScreen> {
     return ci + 1 < clips.length && tryMergeClips(clip, clips[ci + 1]) != null;
   }
 
+  /// Opacity for fade in/out transitions of the active clip.
+  double _fadeOpacity(Clip? clip) {
+    if (clip == null) return 1.0;
+    var opacity = 1.0;
+    final pos = _player.position;
+    final tIn = clip.transitionIn;
+    if (tIn.isEnabled) {
+      final elapsed = pos - clip.timelineStart;
+      if (elapsed < tIn.duration) {
+        opacity *= elapsed.inMilliseconds / tIn.duration.inMilliseconds;
+      }
+    }
+    final tOut = clip.transitionOut;
+    if (tOut.isEnabled) {
+      final remaining = clip.timelineEnd - pos;
+      if (remaining < tOut.duration) {
+        opacity *= remaining.inMilliseconds / tOut.duration.inMilliseconds;
+      }
+    }
+    return opacity.clamp(0.0, 1.0);
+  }
+
+  List<TextOverlay> _activeOverlays() {
+    final pos = _player.position;
+    return _project.overlays
+        .where((o) => pos >= o.start && pos < o.end)
+        .toList();
+  }
+
   Widget _buildPreview() {
     final controller = _player.controller;
+    final clip = _player.activeClip;
+    Widget? video;
     if (controller != null && controller.value.isInitialized) {
-      return AspectRatio(
+      video = AspectRatio(
         aspectRatio: controller.value.aspectRatio,
         child: VideoPlayer(controller),
       );
+      if (clip != null && clip.filter != VideoFilter.none) {
+        video = ColorFiltered(
+          colorFilter: ColorFilter.matrix(clip.filter.matrix),
+          child: video,
+        );
+      }
+      final opacity = _fadeOpacity(clip);
+      if (opacity < 1.0) {
+        video = Opacity(opacity: opacity, child: video);
+      }
     }
-    return Text(
-      _project.tracks.isEmpty
-          ? 'Ketuk + untuk menambahkan video'
-          : 'Preview @ ${_player.position.inSeconds}s',
-      style: const TextStyle(color: Colors.white70),
+    return Stack(
+      alignment: Alignment.center,
+      children: [
+        video ??
+            Text(
+              _project.tracks.isEmpty
+                  ? 'Ketuk + untuk menambahkan video'
+                  : 'Preview @ ${_player.position.inSeconds}s',
+              style: const TextStyle(color: Colors.white70),
+            ),
+        for (final o in _activeOverlays())
+          Positioned.fill(
+            child: Align(
+              alignment: Alignment.center,
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Text(
+                  o.text,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: o.fontSize,
+                    color: Colors.white,
+                    shadows: const [
+                      Shadow(blurRadius: 8, color: Colors.black87),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ],
     );
   }
 
@@ -272,12 +447,66 @@ class _EditorScreenState extends State<EditorScreen> {
     );
   }
 
+  Widget _buildFilterRow() {
+    final clip = _selectedClip;
+    if (clip == null) return const SizedBox.shrink();
+    return Container(
+      color: Colors.grey.shade900,
+      height: 46,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        children: [
+          for (final f in VideoFilter.values)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 2),
+              child: ChoiceChip(
+                label: Text(f.label),
+                selected: clip.filter == f,
+                onSelected: (_) => _setClipFilter(f),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFadeRow() {
+    final clip = _selectedClip;
+    if (clip == null) return const SizedBox.shrink();
+    return Container(
+      color: Colors.grey.shade900,
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          FilterChip(
+            label: const Text('Fade in'),
+            selected: clip.transitionIn.isEnabled,
+            onSelected: (_) => _toggleFade(true),
+          ),
+          const SizedBox(width: 8),
+          FilterChip(
+            label: const Text('Fade out'),
+            selected: clip.transitionOut.isEnabled,
+            onSelected: (_) => _toggleFade(false),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Open Video Editor'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.text_fields),
+            tooltip: 'Tambah teks',
+            onPressed: _addTextOverlay,
+          ),
           IconButton(
             icon: _adding
                 ? const SizedBox(
@@ -329,6 +558,8 @@ class _EditorScreenState extends State<EditorScreen> {
             ),
           ),
           if (_selectedClipId != null) _buildClipToolbar(),
+          if (_selectedClipId != null) _buildFilterRow(),
+          if (_selectedClipId != null) _buildFadeRow(),
           SizedBox(
             height: 220,
             child: TimelineView(
@@ -337,6 +568,7 @@ class _EditorScreenState extends State<EditorScreen> {
               selectedClipId: _selectedClipId,
               onSeek: _player.seek,
               onClipSelected: (id) => setState(() => _selectedClipId = id),
+              onOverlayTap: _onOverlayTap,
               onTrim: _trimClip,
             ),
           ),

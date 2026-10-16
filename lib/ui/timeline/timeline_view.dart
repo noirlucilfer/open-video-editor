@@ -24,6 +24,7 @@ class TimelineView extends StatefulWidget {
     this.selectedClipId,
     this.onSeek,
     this.onClipSelected,
+    this.onOverlayTap,
     this.onTrim,
     this.pixelsPerSecond = 24.0,
   });
@@ -33,6 +34,7 @@ class TimelineView extends StatefulWidget {
   final String? selectedClipId;
   final ValueChanged<Duration>? onSeek;
   final ValueChanged<String?>? onClipSelected;
+  final ValueChanged<TextOverlay>? onOverlayTap;
   final void Function(String clipId, TrimEdge edge, Duration newTimelinePos)?
       onTrim;
   final double pixelsPerSecond;
@@ -82,6 +84,12 @@ class _TimelineViewState extends State<TimelineView> {
                       selectedClipId: widget.selectedClipId,
                       onClipSelected: widget.onClipSelected,
                       onTrim: widget.onTrim,
+                    ),
+                  if (widget.project.overlays.isNotEmpty)
+                    _OverlayLane(
+                      overlays: widget.project.overlays,
+                      pixelsPerSecond: widget.pixelsPerSecond,
+                      onOverlayTap: widget.onOverlayTap,
                     ),
                   if (widget.project.tracks.isEmpty)
                     const _EmptyTimelineHint(),
@@ -321,6 +329,62 @@ class _TrimHandleState extends State<_TrimHandle> {
             child: Icon(Icons.drag_indicator, size: 12, color: Colors.white),
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// Lane showing text overlays as blocks. Tapping one opens edit/delete.
+class _OverlayLane extends StatelessWidget {
+  const _OverlayLane({
+    required this.overlays,
+    required this.pixelsPerSecond,
+    this.onOverlayTap,
+  });
+
+  final List<TextOverlay> overlays;
+  final double pixelsPerSecond;
+  final ValueChanged<TextOverlay>? onOverlayTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 36,
+      margin: const EdgeInsets.symmetric(vertical: 2),
+      decoration: BoxDecoration(
+        color: Colors.grey.shade900,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Stack(
+        children: [
+          for (final overlay in overlays)
+            Positioned(
+              left: overlay.start.inMilliseconds / 1000 * pixelsPerSecond,
+              width: (overlay.end - overlay.start).inMilliseconds /
+                  1000 *
+                  pixelsPerSecond,
+              top: 4,
+              bottom: 4,
+              child: GestureDetector(
+                onTap: () => onOverlayTap?.call(overlay),
+                child: Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 1),
+                  decoration: BoxDecoration(
+                    color: Colors.amber.shade700,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  alignment: Alignment.centerLeft,
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  child: Text(
+                    overlay.text,
+                    style:
+                        const TextStyle(color: Colors.black, fontSize: 11),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }

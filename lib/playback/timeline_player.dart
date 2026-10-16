@@ -29,6 +29,9 @@ class TimelinePlayer extends ChangeNotifier {
   bool get playing => _playing;
   VideoPlayerController? get controller => _controller;
 
+  /// The clip currently under the playhead (null in gaps).
+  Clip? get activeClip => _activeClip;
+
   Future<void> setProject(TimelineProject project) async {
     _project = project;
     if (_position > _project.duration) {
