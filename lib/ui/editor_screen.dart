@@ -44,6 +44,7 @@ class _EditorScreenState extends State<EditorScreen> {
   final MediaPicker _picker = MediaPicker();
   TimelineProject _project = const TimelineProject();
   String? _selectedClipId;
+  String? _selectedAudioId;
   bool _adding = false;
   final _exportProgress = ValueNotifier<double>(0);
 
@@ -173,14 +174,57 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 
   Future<void> _trimClip(
-      String clipId, TrimEdge edge, Duration newTimelinePos) async {
-    final found = _findClip(clipId);
+      String clipId, TrimEdge edge, Duration newTimelinePos) async {    final found = _findClip(clipId);
     if (found == null) return;
     final (ti, ci, clip) = found;
     final updated = edge == TrimEdge.start
         ? trimClipStart(clip, newTimelinePos)
         : trimClipEnd(clip, newTimelinePos);
     await _replaceClip(ti, ci, updated);
+  }
+
+  Future<void> _trimAudio(
+      String audioId, TrimEdge edge, Duration newTimelinePos) async {
+    final tracks = List<AudioTrack>.from(_project.audioTracks);
+    final idx = tracks.indexWhere((t) => t.id == audioId);
+    if (idx < 0) return;
+    tracks[idx] = edge == TrimEdge.start
+        ? trimAudioStart(tracks[idx], newTimelinePos)
+        : trimAudioEnd(tracks[idx], newTimelinePos);
+    await _updateProject(_with(audioTracks: tracks));
+  }
+
+  Future<void> _deleteAudio(String audioId) async {
+    if (_selectedAudioId == audioId) _selectedAudioId = null;
+    await _updateProject(_with(
+        audioTracks:
+            _project.audioTracks.where((t) => t.id != audioId).toList()));
+  }
+
+  Widget _buildAudioToolbar() {
+    final track = _project.audioTracks
+        .where((t) => t.id == _selectedAudioId)
+        .firstOrNull;
+    if (track == null) return const SizedBox.shrink();
+    return Container(
+      color: Colors.grey.shade900,
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          TextButton.icon(
+            icon: const Icon(Icons.volume_up, size: 18),
+            label: const Text('Volume'),
+            onPressed: () => _onAudioTap(track),
+          ),
+          TextButton.icon(
+            icon: const Icon(Icons.delete_outline, size: 18),
+            label: const Text('Hapus'),
+            onPressed: () => _deleteAudio(track.id),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _splitSelected() async {
@@ -443,10 +487,7 @@ class _EditorScreenState extends State<EditorScreen> {
       ),
     );
     if (action == 'delete') {
-      await _updateProject(_with(
-          audioTracks: _project.audioTracks
-              .where((t) => t.id != track.id)
-              .toList()));
+      await _deleteAudio(track.id);
     } else if (action == 'save') {
       await _updateProject(_with(
           audioTracks: _project.audioTracks
@@ -957,18 +998,28 @@ class _EditorScreenState extends State<EditorScreen> {
           if (_selectedClipId != null) _buildSpeedRow(),
           if (_selectedClipId != null) _buildFilterRow(),
           if (_selectedClipId != null) _buildFadeRow(),
+          if (_selectedAudioId != null) _buildAudioToolbar(),
           SizedBox(
             height: 260,
             child: TimelineView(
               project: _project,
               position: _player.position,
               selectedClipId: _selectedClipId,
+              selectedAudioId: _selectedAudioId,
               onSeek: _player.seek,
-              onClipSelected: (id) => setState(() => _selectedClipId = id),
+              onClipSelected: (id) => setState(() {
+                _selectedClipId = id;
+                if (id != null) _selectedAudioId = null;
+              }),
+              onAudioSelected: (id) => setState(() {
+                _selectedAudioId = id;
+                if (id != null) _selectedClipId = null;
+              }),
               onOverlayTap: _onOverlayTap,
               onAudioTap: _onAudioTap,
               onStickerTap: _onStickerTap,
               onTrim: _trimClip,
+              onAudioTrim: _trimAudio,
             ),
           ),
         ],

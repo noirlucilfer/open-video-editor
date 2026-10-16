@@ -121,3 +121,35 @@ Clip? tryMergeClips(Clip a, Clip b) {
   if (a.sourceStart + a.sourceDuration != b.sourceStart) return null;
   return a.copyWith(duration: a.duration + b.duration);
 }
+
+/// Audio tracks may never be trimmed shorter than this.
+const minAudioDuration = Duration(milliseconds: 500);
+
+/// Moves the audio track's start edge to [newTimelineStart].
+///
+/// The trim offset shifts by the same delta; clamped so the track never
+/// starts before the beginning of its source file and never shrinks below
+/// [minAudioDuration].
+AudioTrack trimAudioStart(AudioTrack track, Duration newTimelineStart) {
+  final minStart = track.timelineStart - track.trimStart;
+  final maxStart = track.timelineEnd - minAudioDuration;
+  final start = _clampDuration(newTimelineStart, minStart, maxStart);
+  final delta = start - track.timelineStart;
+  return track.copyWith(
+    timelineStart: start,
+    trimStart: track.trimStart + delta,
+    duration: track.duration - delta,
+  );
+}
+
+/// Moves the audio track's end edge to [newTimelineEnd].
+///
+/// Clamped so the track never extends past the end of its source file and
+/// never shrinks below [minAudioDuration].
+AudioTrack trimAudioEnd(AudioTrack track, Duration newTimelineEnd) {
+  final minEnd = track.timelineStart + minAudioDuration;
+  final maxEnd =
+      track.timelineStart + (track.sourceDuration - track.trimStart);
+  final end = _clampDuration(newTimelineEnd, minEnd, maxEnd);
+  return track.copyWith(duration: end - track.timelineStart);
+}

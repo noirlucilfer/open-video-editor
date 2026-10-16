@@ -232,8 +232,7 @@ void main() {
     });
   });
 
-  group('speed-aware trim/split', () {
-    test('trimClipStart shifts source by delta * speed', () {
+  group('speed-aware trim/split', () {    test('trimClipStart shifts source by delta * speed', () {
       final fast = setClipSpeed(_clip(), 2.0); // 5s..7s, source 2s..6s
       final c = trimClipStart(fast, const Duration(seconds: 6));
       expect(c.timelineStart, const Duration(seconds: 6));
@@ -255,6 +254,56 @@ void main() {
       expect(first.duration, const Duration(seconds: 1));
       expect(second.sourceStart, const Duration(seconds: 4));
       expect(second.speed, 2.0);
+    });
+  });
+
+  group('trimAudioStart/trimAudioEnd', () {
+    const track = AudioTrack(
+      id: 'a',
+      path: '/tmp/song.mp3',
+      name: 'song.mp3',
+      timelineStart: Duration(seconds: 2),
+      trimStart: Duration(seconds: 5),
+      duration: Duration(seconds: 10),
+      sourceDuration: Duration(seconds: 30),
+    );
+
+    test('trimAudioStart moves start and shifts trim offset', () {
+      final t = trimAudioStart(track, const Duration(seconds: 4));
+      expect(t.timelineStart, const Duration(seconds: 4));
+      expect(t.trimStart, const Duration(seconds: 7));
+      expect(t.duration, const Duration(seconds: 8));
+    });
+
+    test('trimAudioStart clamps at source beginning', () {
+      // trimStart is 5s and timelineStart is 2s: dragging to -99s clamps at
+      // minStart = 2s - 5s = -3s, where trimStart hits exactly 0.
+      final t = trimAudioStart(track, const Duration(seconds: -99));
+      expect(t.timelineStart, const Duration(seconds: -3));
+      expect(t.trimStart, Duration.zero);
+      expect(t.duration, const Duration(seconds: 15));
+    });
+
+    test('trimAudioStart never shrinks below minAudioDuration', () {
+      final t = trimAudioStart(track, const Duration(seconds: 99));
+      expect(t.duration, minAudioDuration);
+    });
+
+    test('trimAudioEnd extends and shrinks duration', () {
+      final t = trimAudioEnd(track, const Duration(seconds: 20));
+      // source allows up to 2s + (30s - 5s) = 27s.
+      expect(t.timelineEnd, const Duration(seconds: 20));
+      expect(t.trimStart, const Duration(seconds: 5));
+    });
+
+    test('trimAudioEnd clamps at source end', () {
+      final t = trimAudioEnd(track, const Duration(seconds: 99));
+      expect(t.timelineEnd, const Duration(seconds: 27));
+    });
+
+    test('trimAudioEnd never shrinks below minAudioDuration', () {
+      final t = trimAudioEnd(track, const Duration(seconds: 2));
+      expect(t.duration, minAudioDuration);
     });
   });
 }

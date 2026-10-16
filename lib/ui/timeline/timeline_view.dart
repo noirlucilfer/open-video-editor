@@ -22,25 +22,32 @@ class TimelineView extends StatefulWidget {
     required this.project,
     required this.position,
     this.selectedClipId,
+    this.selectedAudioId,
     this.onSeek,
     this.onClipSelected,
+    this.onAudioSelected,
     this.onOverlayTap,
     this.onAudioTap,
     this.onStickerTap,
     this.onTrim,
+    this.onAudioTrim,
     this.pixelsPerSecond = 24.0,
   });
 
   final TimelineProject project;
   final Duration position;
   final String? selectedClipId;
+  final String? selectedAudioId;
   final ValueChanged<Duration>? onSeek;
   final ValueChanged<String?>? onClipSelected;
+  final ValueChanged<String?>? onAudioSelected;
   final ValueChanged<TextOverlay>? onOverlayTap;
   final ValueChanged<AudioTrack>? onAudioTap;
   final ValueChanged<StickerOverlay>? onStickerTap;
   final void Function(String clipId, TrimEdge edge, Duration newTimelinePos)?
       onTrim;
+  final void Function(String audioId, TrimEdge edge, Duration newTimelinePos)?
+      onAudioTrim;
   final double pixelsPerSecond;
 
   @override
@@ -65,6 +72,7 @@ class _TimelineViewState extends State<TimelineView> {
     return GestureDetector(
       onTapDown: (d) {
         widget.onClipSelected?.call(null);
+        widget.onAudioSelected?.call(null);
         _seekAt(d.localPosition);
       },
       onHorizontalDragUpdate: (d) => _seekAt(d.localPosition),
@@ -99,7 +107,10 @@ class _TimelineViewState extends State<TimelineView> {
                     _AudioLane(
                       tracks: widget.project.audioTracks,
                       pixelsPerSecond: widget.pixelsPerSecond,
+                      selectedTrackId: widget.selectedAudioId,
+                      onAudioSelected: widget.onAudioSelected,
                       onAudioTap: widget.onAudioTap,
+                      onAudioTrim: widget.onAudioTrim,
                     ),
                   if (widget.project.stickers.isNotEmpty)
                     _StickerLane(
@@ -406,18 +417,25 @@ class _OverlayLane extends StatelessWidget {
   }
 }
 
-/// Lane showing background audio tracks as blocks. Tapping one opens
-/// volume/delete options.
+/// Lane showing background audio tracks as blocks. Tracks are selectable
+/// (tap); the selected track exposes draggable trim handles on its edges.
 class _AudioLane extends StatelessWidget {
   const _AudioLane({
     required this.tracks,
     required this.pixelsPerSecond,
+    this.selectedTrackId,
+    this.onAudioSelected,
     this.onAudioTap,
+    this.onAudioTrim,
   });
 
   final List<AudioTrack> tracks;
   final double pixelsPerSecond;
+  final String? selectedTrackId;
+  final ValueChanged<String?>? onAudioSelected;
   final ValueChanged<AudioTrack>? onAudioTap;
+  final void Function(String audioId, TrimEdge edge, Duration newTimelinePos)?
+      onAudioTrim;
 
   @override
   Widget build(BuildContext context) {
@@ -431,23 +449,65 @@ class _AudioLane extends StatelessWidget {
       child: Stack(
         children: [
           for (final track in tracks)
-            Positioned(
-              left: track.timelineStart.inMilliseconds / 1000 * pixelsPerSecond,
-              width: (track.timelineEnd - track.timelineStart).inMilliseconds /
-                  1000 *
-                  pixelsPerSecond,
-              top: 4,
-              bottom: 4,
-              child: GestureDetector(
-                onTap: () => onAudioTap?.call(track),
-                child: Container(
-                  margin: const EdgeInsets.symmetric(horizontal: 1),
-                  decoration: BoxDecoration(
-                    color: Colors.green.shade700,
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                  alignment: Alignment.centerLeft,
-                  padding: const EdgeInsets.symmetric(horizontal: 6),
+            _AudioBlock(
+              track: track,
+              pixelsPerSecond: pixelsPerSecond,
+              selected: track.id == selectedTrackId,
+              onTap: () {
+                onAudioSelected?.call(track.id);
+                onAudioTap?.call(track);
+              },
+              onAudioTrim: onAudioTrim == null
+                  ? null
+                  : (edge, pos) => onAudioTrim!(track.id, edge, pos),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AudioBlock extends StatelessWidget {
+  const _AudioBlock({
+    required this.track,
+    required this.pixelsPerSecond,
+    required this.selected,
+    this.onTap,
+    this.onAudioTrim,
+  });
+
+  final AudioTrack track;
+  final double pixelsPerSecond;
+  final bool selected;
+  final VoidCallback? onTap;
+  final void Function(TrimEdge edge, Duration newTimelinePos)? onAudioTrim;
+
+  @override
+  Widget build(BuildContext context) {
+    final left = track.timelineStart.inMilliseconds / 1000 * pixelsPerSecond;
+    final width = (track.timelineEnd - track.timelineStart).inMilliseconds /
+        1000 *
+        pixelsPerSecond;
+    return Positioned(
+      left: left,
+      width: width.clamp(8.0, double.infinity),
+      top: 4,
+      bottom: 4,
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          decoration: BoxDecoration(
+            color: selected ? Colors.green.shade400 : Colors.green.shade700,
+            borderRadius: BorderRadius.circular(4),
+            border:
+                selected ? Border.all(color: Colors.white, width: 2) : null,
+          ),
+          child: Stack(
+            children: [
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 14),
                   child: Row(
                     children: [
                       const Icon(Icons.music_note,
@@ -465,8 +525,23 @@ class _AudioLane extends StatelessWidget {
                   ),
                 ),
               ),
-            ),
-        ],
+              if (selected && onAudioTrim != null) ...[
+                _TrimHandle(
+                  edge: TrimEdge.start,
+                  pixelsPerSecond: pixelsPerSecond,
+                  anchor: track.timelineStart,
+                  onTrim: (pos) => onAudioTrim!(TrimEdge.start, pos),
+                ),
+                _TrimHandle(
+                  edge: TrimEdge.end,
+                  pixelsPerSecond: pixelsPerSecond,
+                  anchor: track.timelineEnd,
+                  onTrim: (pos) => onAudioTrim!(TrimEdge.end, pos),
+                ),
+              ],
+            ],
+          ),
+        ),
       ),
     );
   }
