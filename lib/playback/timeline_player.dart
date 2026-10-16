@@ -50,7 +50,16 @@ class TimelinePlayer extends ChangeNotifier {
 
   Future<void> _refreshActiveClip() async {
     final clip = _clipAt(_position);
-    if (clip?.id == _activeClip?.id) return;
+    final cur = _activeClip;
+    // Compare geometry as well as id: trim/split/merge replace the clip
+    // object while keeping the id, so an id-only check would keep a stale
+    // reference and the preview would play the wrong segment.
+    if (clip?.id == cur?.id &&
+        clip?.timelineStart == cur?.timelineStart &&
+        clip?.duration == cur?.duration &&
+        clip?.sourceStart == cur?.sourceStart) {
+      return;
+    }
     await _swapController(clip);
   }
 

@@ -30,7 +30,8 @@ The web target will swap in an ffmpeg.wasm engine behind the same interface.
 ## Roadmap
 
 - [x] Milestone 1: repo scaffold, engine abstraction, timeline UI skeleton
-- [ ] Milestone 2: media picking + real preview playback (platform player)
+- [x] Milestone 2: media picking + real preview playback (image_picker,
+  video_player, TimelinePlayer with clip chaining; `flutter build web` OK)
 - [ ] Milestone 3: trim / split / merge on the timeline
 - [ ] Milestone 4: text overlays, filters, transitions
 - [ ] Milestone 5: export to MP4 via FFmpeg filter graph
