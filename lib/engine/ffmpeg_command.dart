@@ -135,6 +135,7 @@ List<String> buildExportCommand(
       final chain = <String>[
         'aresample=44100',
         'aformat=channel_layouts=stereo',
+        ..._audioFades(track),
         'adelay=$ms|$ms',
         'volume=${track.volume}',
       ];
@@ -209,6 +210,23 @@ List<String> buildExportCommand(
 
 String _num(double v) =>
     v.toStringAsFixed(3).replaceAll(RegExp(r'\.?0+$'), '');
+
+/// afade in/out for a background music track, clamped to its duration.
+/// Applied before adelay so timings are relative to the track content.
+List<String> _audioFades(AudioTrack track) {
+  final out = <String>[];
+  final durMs = track.duration.inMilliseconds;
+  if (track.fadeIn > Duration.zero) {
+    final d = Duration(milliseconds: track.fadeIn.inMilliseconds.clamp(1, durMs));
+    out.add('afade=t=in:st=0:d=${_sec(d)}');
+  }
+  if (track.fadeOut > Duration.zero) {
+    final d = Duration(milliseconds: track.fadeOut.inMilliseconds.clamp(1, durMs));
+    out.add('afade=t=out:st=${_sec(Duration(milliseconds: durMs) - d)}'
+        ':d=${_sec(d)}');
+  }
+  return out;
+}
 
 /// Crossfade duration at each clip boundary (0 when the boundary has no
 /// crossfade). A crossfade only applies between timeline-contiguous clips.

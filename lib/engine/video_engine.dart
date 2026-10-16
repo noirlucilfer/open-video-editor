@@ -269,6 +269,8 @@ class AudioTrack {
     required this.duration,
     required this.sourceDuration,
     this.volume = 1.0,
+    this.fadeIn = Duration.zero,
+    this.fadeOut = Duration.zero,
   });
 
   final String id;
@@ -282,6 +284,10 @@ class AudioTrack {
   final Duration sourceDuration;
   final double volume;
 
+  /// Ramps applied at export; clamped to the track duration.
+  final Duration fadeIn;
+  final Duration fadeOut;
+
   Duration get timelineEnd => timelineStart + duration;
 
   AudioTrack copyWith({
@@ -289,6 +295,8 @@ class AudioTrack {
     Duration? trimStart,
     Duration? duration,
     double? volume,
+    Duration? fadeIn,
+    Duration? fadeOut,
   }) =>
       AudioTrack(
         id: id,
@@ -299,6 +307,8 @@ class AudioTrack {
         duration: duration ?? this.duration,
         sourceDuration: sourceDuration,
         volume: volume ?? this.volume,
+        fadeIn: fadeIn ?? this.fadeIn,
+        fadeOut: fadeOut ?? this.fadeOut,
       );
 }
 

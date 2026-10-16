@@ -8,6 +8,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:js_interop';
+import 'dart:typed_data';
 
 import 'ffmpeg_runner.dart';
 
@@ -93,4 +94,10 @@ class FFmpegWasmRunner implements FFmpegRunner {
       exportTimer.cancel();
     }
   }
+
+  @override
+  Future<Uint8List?> extractFrame(String inputPath, Duration at,
+          {int width = 160}) =>
+      // Frame extraction isn't plumbed through the wasm bridge.
+      Future.value(null);
 }

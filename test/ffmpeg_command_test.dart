@@ -281,6 +281,39 @@ void main() {
       expect(args[args.indexOf('-map', args.indexOf('[outv]')) + 1], '[outa]');
     });
 
+    test('audio track fades become afade filters before adelay', () {
+      final withAudio = TimelineProject(
+        tracks: [
+          VideoTrack(id: 'v1', clips: [
+            _clip('c1', '/tmp/a.mp4', Duration.zero,
+                const Duration(seconds: 6)),
+          ])
+        ],
+        audioTracks: [
+          const AudioTrack(
+            id: 'aud1',
+            path: '/tmp/song.mp3',
+            name: 'song.mp3',
+            timelineStart: Duration(seconds: 1),
+            trimStart: Duration.zero,
+            duration: Duration(seconds: 5),
+            sourceDuration: Duration(seconds: 30),
+            fadeIn: Duration(seconds: 1),
+            fadeOut: Duration(seconds: 2),
+          ),
+        ],
+      );
+      final args = buildExportCommand(withAudio, _config('/tmp/o.mp4'));
+      final fc = args[args.indexOf('-filter_complex') + 1];
+      expect(
+          fc,
+          contains(
+              '[1:a]aresample=44100,aformat=channel_layouts=stereo'
+              ',afade=t=in:st=0:d=1.0'
+              ',afade=t=out:st=3.0:d=2.0'
+              ',adelay=1000|1000,volume=1.0[am0]'));
+    });
+
     test('sticker becomes a scaled overlay with enable window', () {
       final project = _project(
         clips: [

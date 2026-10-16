@@ -23,6 +23,12 @@ abstract class FFmpegRunner {
     Duration? total,
     void Function(double progress)? onProgress,
   });
+
+  /// Extracts a single frame at [at] as PNG bytes, or null when the
+  /// platform cannot do it (e.g. web). Used for timeline filmstrips.
+  Future<Uint8List?> extractFrame(String inputPath, Duration at,
+          {int width = 160}) =>
+      Future.value(null);
 }
 
 /// Picks the right [FFmpegRunner] for the current platform:
@@ -108,6 +114,38 @@ class ProcessFFmpegRunner implements FFmpegRunner {
     if (code == 0) report(1.0);
     return code;
   }
+
+  @override
+  Future<Uint8List?> extractFrame(String inputPath, Duration at,
+      {int width = 160}) async {
+    final out =
+        '${Directory.systemTemp.path}/ove_thumb_${DateTime.now().microsecondsSinceEpoch}.png';
+    try {
+      final result = await Process.run(executable, [
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-ss',
+        (at.inMilliseconds / 1000).toString(),
+        '-i',
+        inputPath,
+        '-frames:v',
+        '1',
+        '-vf',
+        'scale=$width:-1',
+        '-y',
+        out,
+      ]);
+      if (result.exitCode != 0) return null;
+      return await File(out).readAsBytes();
+    } catch (_) {
+      return null;
+    } finally {
+      try {
+        await File(out).delete();
+      } catch (_) {}
+    }
+  }
 }
 
 /// A fake runner for widget tests: replays canned progress, then succeeds.
@@ -131,4 +169,9 @@ class FakeFFmpegRunner implements FFmpegRunner {
     }
     return exitCode;
   }
+
+  @override
+  Future<Uint8List?> extractFrame(String inputPath, Duration at,
+          {int width = 160}) =>
+      Future.value(null);
 }

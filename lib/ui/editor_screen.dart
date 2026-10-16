@@ -20,6 +20,7 @@ import '../engine/timeline_ops.dart';
 import '../engine/video_engine.dart';
 import '../media/media_picker.dart';
 import '../media/sticker_image.dart';
+import '../media/thumbnails.dart';
 import '../playback/audio_source.dart';
 import '../playback/player_controller_factory.dart';
 import '../playback/timeline_player.dart';
@@ -42,6 +43,7 @@ class _EditorScreenState extends State<EditorScreen> {
   late final VideoEngine _engine;
   late final TimelinePlayer _player;
   final MediaPicker _picker = MediaPicker();
+  final ThumbnailService _thumbnails = ThumbnailService();
   TimelineProject _project = const TimelineProject();
   String? _selectedClipId;
   String? _selectedAudioId;
@@ -100,6 +102,7 @@ class _EditorScreenState extends State<EditorScreen> {
 
   Future<void> _updateProject(TimelineProject project) async {
     _project = project;
+    _thumbnails.invalidate();
     await _player.setProject(_project);
   }
 
@@ -445,6 +448,9 @@ class _EditorScreenState extends State<EditorScreen> {
 
   Future<void> _onAudioTap(AudioTrack track) async {
     var volume = track.volume;
+    var fadeIn = track.fadeIn > Duration.zero;
+    var fadeOut = track.fadeOut > Duration.zero;
+    const oneSec = Duration(seconds: 1);
     final action = await showDialog<String>(
       context: context,
       builder: (ctx) => StatefulBuilder(
@@ -467,6 +473,22 @@ class _EditorScreenState extends State<EditorScreen> {
                       onChanged: (v) =>
                           setDialogState(() => volume = v),
                     ),
+                  ),
+                ],
+              ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  FilterChip(
+                    label: const Text('Fade in'),
+                    selected: fadeIn,
+                    onSelected: (v) => setDialogState(() => fadeIn = v),
+                  ),
+                  const SizedBox(width: 8),
+                  FilterChip(
+                    label: const Text('Fade out'),
+                    selected: fadeOut,
+                    onSelected: (v) => setDialogState(() => fadeOut = v),
                   ),
                 ],
               ),
@@ -496,7 +518,13 @@ class _EditorScreenState extends State<EditorScreen> {
     } else if (action == 'save') {
       await _updateProject(_with(
           audioTracks: _project.audioTracks
-              .map((t) => t.id == track.id ? t.copyWith(volume: volume) : t)
+              .map((t) => t.id == track.id
+                  ? t.copyWith(
+                      volume: volume,
+                      fadeIn: fadeIn ? oneSec : Duration.zero,
+                      fadeOut: fadeOut ? oneSec : Duration.zero,
+                    )
+                  : t)
               .toList()));
     }
   }
@@ -1110,6 +1138,7 @@ class _EditorScreenState extends State<EditorScreen> {
               position: _player.position,
               selectedClipId: _selectedClipId,
               selectedAudioId: _selectedAudioId,
+              thumbnails: _thumbnails,
               onSeek: _player.seek,
               onClipSelected: (id) => setState(() {
                 _selectedClipId = id;

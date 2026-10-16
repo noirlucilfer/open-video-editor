@@ -4,9 +4,12 @@
 // Milestone 3: clips are selectable (tap) and the selected clip exposes
 // draggable trim handles on its start/end edges.
 
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 
 import '../../engine/video_engine.dart';
+import '../../media/thumbnails.dart';
 
 /// Which edge of a clip is being trimmed.
 enum TrimEdge { start, end }
@@ -32,6 +35,7 @@ class TimelineView extends StatefulWidget {
     this.onTrim,
     this.onAudioTrim,
     this.pixelsPerSecond = 24.0,
+    this.thumbnails,
   });
 
   final TimelineProject project;
@@ -49,6 +53,9 @@ class TimelineView extends StatefulWidget {
   final void Function(String audioId, TrimEdge edge, Duration newTimelinePos)?
       onAudioTrim;
   final double pixelsPerSecond;
+
+  /// Filmstrip thumbnails; null disables them.
+  final ThumbnailService? thumbnails;
 
   @override
   State<TimelineView> createState() => _TimelineViewState();
@@ -96,6 +103,7 @@ class _TimelineViewState extends State<TimelineView> {
                       selectedClipId: widget.selectedClipId,
                       onClipSelected: widget.onClipSelected,
                       onTrim: widget.onTrim,
+                      thumbnails: widget.thumbnails,
                     ),
                   if (widget.project.overlays.isNotEmpty)
                     _OverlayLane(
@@ -198,6 +206,7 @@ class _TrackLane extends StatelessWidget {
     this.selectedClipId,
     this.onClipSelected,
     this.onTrim,
+    this.thumbnails,
   });
 
   final VideoTrack track;
@@ -206,6 +215,7 @@ class _TrackLane extends StatelessWidget {
   final ValueChanged<String?>? onClipSelected;
   final void Function(String clipId, TrimEdge edge, Duration newTimelinePos)?
       onTrim;
+  final ThumbnailService? thumbnails;
 
   @override
   Widget build(BuildContext context) {
@@ -227,6 +237,7 @@ class _TrackLane extends StatelessWidget {
               onTrim: onTrim == null
                   ? null
                   : (edge, pos) => onTrim!(clip.id, edge, pos),
+              thumbnails: thumbnails,
             ),
         ],
       ),
@@ -241,6 +252,7 @@ class _ClipBlock extends StatelessWidget {
     required this.selected,
     this.onTap,
     this.onTrim,
+    this.thumbnails,
   });
 
   final Clip clip;
@@ -248,11 +260,13 @@ class _ClipBlock extends StatelessWidget {
   final bool selected;
   final VoidCallback? onTap;
   final void Function(TrimEdge edge, Duration newTimelinePos)? onTrim;
+  final ThumbnailService? thumbnails;
 
   @override
   Widget build(BuildContext context) {
     final left = clip.timelineStart.inMilliseconds / 1000 * pixelsPerSecond;
     final width = clip.duration.inMilliseconds / 1000 * pixelsPerSecond;
+    final thumbs = thumbnails;
     return Positioned(
       left: left,
       width: width.clamp(8.0, double.infinity),
@@ -270,13 +284,29 @@ class _ClipBlock extends StatelessWidget {
           ),
           child: Stack(
             children: [
+              if (thumbs != null)
+                Positioned.fill(
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(4),
+                    child: _Filmstrip(clip: clip, service: thumbs),
+                  ),
+                ),
               Align(
                 alignment: Alignment.centerLeft,
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 14),
                   child: Text(
                     clip.source.id,
-                    style: const TextStyle(color: Colors.white, fontSize: 11),
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 11,
+                      shadows: [
+                        Shadow(
+                            color: Colors.black54,
+                            blurRadius: 4,
+                            offset: Offset(0, 1))
+                      ],
+                    ),
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
@@ -299,6 +329,46 @@ class _ClipBlock extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Row of extracted frames filling a clip block. One frame per ~64px,
+/// capped at 8; failed extractions fall back to an empty box.
+class _Filmstrip extends StatelessWidget {
+  const _Filmstrip({required this.clip, required this.service});
+
+  final Clip clip;
+  final ThumbnailService service;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final count =
+            (constraints.maxWidth / 64).floor().clamp(1, 8).toInt();
+        return Row(
+          children: [
+            for (var i = 0; i < count; i++)
+              Expanded(
+                child: FutureBuilder<Uint8List?>(
+                  future: service.frameAt(clip, (i + 0.5) / count),
+                  builder: (context, snap) {
+                    final bytes = snap.data;
+                    if (bytes == null) {
+                      return const SizedBox.expand();
+                    }
+                    return Image.memory(
+                      bytes,
+                      fit: BoxFit.cover,
+                      gaplessPlayback: true,
+                    );
+                  },
+                ),
+              ),
+          ],
+        );
+      },
     );
   }
 }

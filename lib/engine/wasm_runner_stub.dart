@@ -1,5 +1,7 @@
 // Stub used on non-web platforms: wasm export only exists in the browser.
 
+import 'dart:typed_data';
+
 import 'ffmpeg_runner.dart';
 
 class FFmpegWasmRunner implements FFmpegRunner {
@@ -12,4 +14,9 @@ class FFmpegWasmRunner implements FFmpegRunner {
     void Function(double progress)? onProgress,
   }) =>
       throw UnsupportedError('FFmpeg.wasm export is only available on web');
+
+  @override
+  Future<Uint8List?> extractFrame(String inputPath, Duration at,
+          {int width = 160}) =>
+      Future.value(null);
 }
