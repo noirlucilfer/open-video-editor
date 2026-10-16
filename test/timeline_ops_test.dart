@@ -157,6 +157,29 @@ void main() {
       expect(tryMergeClips(a, b), isNull);
     });
 
+    test('merge drops an interior crossfade', () {
+      const a = Clip(
+        id: 'a',
+        source: _src,
+        timelineStart: Duration(seconds: 0),
+        sourceStart: Duration.zero,
+        duration: Duration(seconds: 4),
+        transitionOut: ClipTransition(
+            type: TransitionType.crossfade, duration: Duration(seconds: 1)),
+      );
+      const b = Clip(
+        id: 'b',
+        source: _src,
+        timelineStart: Duration(seconds: 4),
+        sourceStart: Duration(seconds: 4),
+        duration: Duration(seconds: 4),
+      );
+      final m = tryMergeClips(a, b);
+      expect(m, isNotNull);
+      expect(m!.transitionOut.type, TransitionType.none);
+      expect(m.duration, const Duration(seconds: 8));
+    });
+
     test('merges speed-adjusted source contiguity', () {
       // a: timeline 0..2s @2x -> source 0..4s; b: timeline 2..4s @2x -> 4..8s.
       const a = Clip(

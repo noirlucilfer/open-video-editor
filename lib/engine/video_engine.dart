@@ -82,6 +82,10 @@ enum VideoFilter {
 enum TransitionType {
   none,
   fade,
+  /// Dissolve into the next clip (only meaningful on [Clip.transitionOut]
+  /// when the next clip is timeline-contiguous). Export renders it with
+  /// xfade/acrossfade; the preview shows a hard cut.
+  crossfade,
 }
 
 /// A transition applied at the start ([transitionIn]) or end

@@ -110,17 +110,28 @@ List<String> buildExportCommand(
   }
 
   // concat wants segment-interleaved inputs: [v0][a0][v1][a1]...
-  final maps = [for (var i = 0; i < clips.length; i++) '[v$i][a$i]'].join();
-  filters.add('${maps}concat=n=${clips.length}:v=1:a=1[catv][cata]');
+  // With crossfades, boundaries dissolve via xfade/acrossfade chains
+  // instead of a plain concat.
+  final xfades = _xfadeDurations(clips);
+  final hasXfade = xfades.any((d) => d > Duration.zero);
+  if (hasXfade) {
+    _xfadeChains(filters, clips, xfades);
+  } else {
+    final maps =
+        [for (var i = 0; i < clips.length; i++) '[v$i][a$i]'].join();
+    filters.add('${maps}concat=n=${clips.length}:v=1:a=1[catv][cata]');
+  }
 
   // Background audio tracks: delay to their timeline start, apply volume,
   // then mix under the clip audio. duration=first keeps the project length.
+  // Timeline starts are remapped past any earlier crossfades.
   var audioLabel = 'cata';
   if (project.audioTracks.isNotEmpty) {
     final mixInputs = <String>['[cata]'];
     for (var j = 0; j < project.audioTracks.length; j++) {
       final track = project.audioTracks[j];
-      final ms = track.timelineStart.inMilliseconds;
+      final ms =
+          _mapOutputTime(track.timelineStart, clips, xfades).inMilliseconds;
       final chain = <String>[
         'aresample=44100',
         'aformat=channel_layouts=stereo',
@@ -137,8 +148,16 @@ List<String> buildExportCommand(
 
   var videoLabel = 'catv';
   for (var i = 0; i < project.overlays.length; i++) {
+    final o = project.overlays[i];
     final next = 'ov$i';
-    filters.add('[$videoLabel]${_drawtext(project.overlays[i], fontFile)}[$next]');
+    final mapped = TextOverlay(
+      id: o.id,
+      text: o.text,
+      start: _mapOutputTime(o.start, clips, xfades),
+      end: _mapOutputTime(o.end, clips, xfades),
+      fontSize: o.fontSize,
+    );
+    filters.add('[$videoLabel]${_drawtext(mapped, fontFile)}[$next]');
     videoLabel = next;
   }
   for (var k = 0; k < project.stickers.length; k++) {
@@ -146,9 +165,12 @@ List<String> buildExportCommand(
     final w = (config.width * 0.25 * sticker.scale).round().clamp(8, 4096);
     filters.add('[${stickerBase + k}:v]scale=$w:-1[st$k]');
     final next = 'sv$k';
+    final start =
+        _mapOutputTime(sticker.start, clips, xfades);
+    final end = _mapOutputTime(sticker.end, clips, xfades);
     filters.add('[$videoLabel][st$k]'
         "overlay=x='(${_num(sticker.x)}*W-w/2)':y='(${_num(sticker.y)}*H-h/2)'"
-        ":enable='between(t,${_sec(sticker.start)},${_sec(sticker.end)})'"
+        ":enable='between(t,${_sec(start)},${_sec(end)})'"
         '[$next]');
     videoLabel = next;
   }
@@ -187,6 +209,91 @@ List<String> buildExportCommand(
 
 String _num(double v) =>
     v.toStringAsFixed(3).replaceAll(RegExp(r'\.?0+$'), '');
+
+/// Crossfade duration at each clip boundary (0 when the boundary has no
+/// crossfade). A crossfade only applies between timeline-contiguous clips.
+List<Duration> _xfadeDurations(List<Clip> clips) {
+  final durs = List<Duration>.filled(
+      clips.isNotEmpty ? clips.length - 1 : 0, Duration.zero);
+  for (var i = 0; i + 1 < clips.length; i++) {
+    final t = clips[i].transitionOut;
+    if (t.type == TransitionType.crossfade &&
+        t.duration > Duration.zero &&
+        clips[i].timelineEnd == clips[i + 1].timelineStart) {
+      // The overlap cannot exceed either clip.
+      final maxD = clips[i].duration < clips[i + 1].duration
+          ? clips[i].duration
+          : clips[i + 1].duration;
+      durs[i] = t.duration > maxD ? maxD : t.duration;
+    }
+  }
+  return durs;
+}
+
+/// Total output duration: crossfades overlap, so each one shortens the
+/// result by its duration.
+Duration exportDuration(TimelineProject project) {
+  final clips = [
+    for (final track in project.tracks) for (final clip in track.clips) clip
+  ]..sort((a, b) => a.timelineStart.compareTo(b.timelineStart));
+  var total = Duration.zero;
+  for (final clip in clips) {
+    total += clip.duration;
+  }
+  for (final d in _xfadeDurations(clips)) {
+    total -= d;
+  }
+  return total;
+}
+
+/// Maps an original-timeline time to the output timeline, accounting for
+/// the time each earlier crossfade absorbed.
+Duration _mapOutputTime(
+    Duration t, List<Clip> clips, List<Duration> xfades) {
+  var shift = Duration.zero;
+  for (var i = 0; i < xfades.length; i++) {
+    if (clips[i].timelineEnd <= t) shift += xfades[i];
+  }
+  return t - shift;
+}
+
+/// Builds the video/audio join chains when at least one boundary has a
+/// crossfade. Boundaries dissolve with xfade/acrossfade; plain boundaries
+/// use two-input concats. Produces [catv] and [cata] like the concat path.
+void _xfadeChains(
+    List<String> filters, List<Clip> clips, List<Duration> xfades) {
+  var vAcc = 'v0';
+  var aAcc = 'a0';
+  var accDurMs = clips[0].duration.inMilliseconds;
+  for (var i = 0; i < xfades.length; i++) {
+    final dMs = xfades[i].inMilliseconds;
+    final nextV = 'v${i + 1}';
+    final nextA = 'a${i + 1}';
+    if (dMs > 0) {
+      final d = _sec(xfades[i]);
+      final offset = _sec(Duration(milliseconds: accDurMs - dMs));
+      final xv = 'x${i + 1}';
+      final xa = 'xa${i + 1}';
+      filters.add(
+          '[$vAcc][$nextV]xfade=transition=fade:duration=$d:offset=$offset[$xv]');
+      filters.add('[$aAcc][$nextA]acrossfade=d=$d[$xa]');
+      vAcc = xv;
+      aAcc = xa;
+      accDurMs = accDurMs + clips[i + 1].duration.inMilliseconds - dMs;
+    } else {
+      final cv = 'cv${i + 1}';
+      final ca = 'ca${i + 1}';
+      filters.add('[$vAcc][$nextV]concat=n=2:v=1:a=0[$cv]');
+      filters.add('[$aAcc][$nextA]concat=n=2:v=0:a=1[$ca]');
+      vAcc = cv;
+      aAcc = ca;
+      accDurMs = accDurMs + clips[i + 1].duration.inMilliseconds;
+    }
+  }
+  // Normalize to the labels the rest of the graph expects.
+  filters.add('[$vAcc]copy[catv]');
+  filters.add('[$aAcc]acopy[cata]');
+}
 
 /// atempo only supports 0.5..2.0; chain filters for wider speeds.
 List<String> _atempo(double speed) {
@@ -237,15 +344,16 @@ List<String> _colorFilter(VideoFilter filter) {
 }
 
 /// Fade in/out filters for [clip]. Timings are relative to the trimmed
-/// input (each input starts at its own 0).
+/// input (each input starts at its own 0). Crossfades are handled by the
+/// xfade chain, not here.
 List<String> _fades(Clip clip) {
   final out = <String>[];
   final tIn = clip.transitionIn;
-  if (tIn.isEnabled) {
+  if (tIn.isEnabled && tIn.type == TransitionType.fade) {
     out.add('fade=t=in:st=0:d=${_sec(tIn.duration)}');
   }
   final tOut = clip.transitionOut;
-  if (tOut.isEnabled) {
+  if (tOut.isEnabled && tOut.type == TransitionType.fade) {
     final start = _sec(clip.duration - tOut.duration);
     out.add('fade=t=out:st=$start:d=${_sec(tOut.duration)}');
   }

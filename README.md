@@ -2,11 +2,40 @@
 
 An open-source video editor inspired by CapCut — built from scratch with
 100% original code (MIT licensed). One Flutter codebase targeting Android,
-iOS, and Web.
+iOS, and Web, with real FFmpeg-powered export on every platform.
 
 > **Legal note:** this project is inspired by CapCut's *features*, not its
 > code. No proprietary code, assets, or resources from ByteDance are used
 > here. Clean-room reimplementation only.
+
+## Features
+
+- **Timeline editing** — multi-track timeline with ruler, draggable
+  playhead, selectable clips, and draggable trim handles
+- **Trim / split / merge / delete** — pure, unit-tested timeline ops
+- **Text overlays** — add, edit, delete; rendered in preview and export
+- **Color filters** — 7 per-clip presets (B&W, Sepia, Invert, Warm, Cool,
+  Vintage)
+- **Clip speed** — 0.5x–2x (up to 4x in the engine), timeline resampled
+- **Background music** — audio tracks with trim handles, volume control,
+  mixed at export
+- **Stickers** — image overlays, draggable in preview, scaled at export
+- **Transitions** — fade in/out per clip, crossfade between clips
+- **Real MP4 export** — a pure-Dart builder translates the timeline into
+  an FFmpeg filter graph (trim/concat, filters, speed, fades, xfade,
+  drawtext, audio mix, sticker overlays) → H.264 + AAC
+
+## Export engines
+
+| Platform    | Engine                          |
+| ----------- | ------------------------------- |
+| Android/iOS | ffmpeg-kit (`ffmpeg_kit_flutter_new`, Full GPL variant) |
+| Web         | ffmpeg.wasm (single-threaded core, no COOP/COEP needed) |
+| Desktop     | system `ffmpeg` binary (subprocess) |
+
+Note: the mobile build links the Full-GPL ffmpeg-kit variant (for x264),
+so distributed mobile binaries fall under GPL-3.0. The Dart code itself
+is MIT.
 
 ## Architecture
 
@@ -15,44 +44,46 @@ lib/
 ├── main.dart                  # App entry
 ├── engine/
 │   ├── video_engine.dart      # Portable engine contract + timeline models
-│   └── ffmpeg_engine.dart     # FFmpeg-backed implementation (stub → real)
+│   ├── timeline_ops.dart      # Pure trim/split/merge/speed/audio-trim ops
+│   ├── ffmpeg_command.dart    # Timeline -> FFmpeg filter graph (pure, tested)
+│   ├── ffmpeg_engine.dart     # VideoEngine implementation
+│   ├── ffmpeg_runner.dart     # Runner interface (process/kit/wasm/fake)
+│   ├── ffmpeg_kit_runner.dart # Mobile runner (Android/iOS)
+│   └── ffmpeg_wasm_runner.dart# Web runner (ffmpeg.wasm via JS bridge)
+├── playback/
+│   └── timeline_player.dart   # Preview playback: clip chaining, speed,
+│                              # background-audio sync
+├── media/
+│   └── media_picker.dart      # Gallery / file pickers (video, image, audio)
 └── ui/
     ├── editor_screen.dart     # Preview + transport + timeline shell
     └── timeline/
-        └── timeline_view.dart # Multi-track timeline widget + playhead
+        └── timeline_view.dart # Lanes: video, text, audio, stickers + playhead
 ```
 
-The design mirrors the classic mobile-editor split: a **native media engine**
-(decode / filter / encode, FFmpeg-based) behind a Dart `VideoEngine`
-interface, with the **UI layer** (timeline, preview, transport) in Flutter.
-The web target will swap in an ffmpeg.wasm engine behind the same interface.
-
-## Roadmap
-
-- [x] Milestone 1: repo scaffold, engine abstraction, timeline UI skeleton
-- [x] Milestone 2: media picking + real preview playback (image_picker,
-  video_player, TimelinePlayer with clip chaining; `flutter build web` OK)
-- [x] Milestone 3: trim / split / merge on the timeline (pure ops +
-  selectable clips, draggable trim handles, split at playhead, merge
-  neighbours, delete; 10 unit tests)
-- [x] Milestone 4: text overlays, filters, transitions (overlay CRUD +
-  timeline lane + preview rendering; 7 color filter presets per clip;
-  fade in/out toggles rendered as opacity ramps)
-- [x] Milestone 5: export to MP4 via FFmpeg filter graph (verified
-  end-to-end with real ffmpeg: trim/concat, per-clip filters, fades,
-  drawtext overlays -> 1080x1920 h264+aac; progress dialog in UI)
-- [x] Milestone 6: web target via ffmpeg.wasm (single-threaded core,
-  no COOP/COEP needed; JS bridge + Dart runner; core verified with the
-  real filter chain in Node: trim/concat/filters/drawtext -> h264+aac)
+The design mirrors the classic mobile-editor split: a **native media
+engine** (decode / filter / encode, FFmpeg-based) behind a Dart
+`VideoEngine` interface, with the **UI layer** (timeline, preview,
+transport) in Flutter. `buildExportCommand` is a pure function, so the
+exact FFmpeg invocation is unit-tested without running anything.
 
 ## Developing
 
-Requires Flutter 3.47+. Dependencies are vendored for offline environments
-(see `tooling/`); normally just run:
+Requires Flutter 3.47+.
 
 ```bash
 flutter pub get
-flutter run
+flutter run              # desktop / connected device
+flutter run -d chrome    # web (export runs fully in-browser via ffmpeg.wasm)
+```
+
+Platform folders (`android/`, `ios/`) are generated; build with
+`flutter build apk` / `flutter build ipa` on a machine with the Android
+SDK / Xcode.
+
+```bash
+flutter analyze   # must be clean
+flutter test      # unit + widget tests
 ```
 
 ## Contributing

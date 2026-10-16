@@ -95,7 +95,8 @@ class FfmpegVideoEngine implements VideoEngine {
     final args = buildExportCommand(project, config, fontFile: font);
     final code = await _runner.run(
       args,
-      total: project.duration,
+      // Crossfades overlap, so the output is shorter than the timeline.
+      total: exportDuration(project),
       onProgress: onProgress,
     );
     if (code != 0) {

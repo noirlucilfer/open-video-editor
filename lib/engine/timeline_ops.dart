@@ -119,7 +119,13 @@ Clip? tryMergeClips(Clip a, Clip b) {
   if (a.speed != b.speed) return null;
   if (a.timelineEnd != b.timelineStart) return null;
   if (a.sourceStart + a.sourceDuration != b.sourceStart) return null;
-  return a.copyWith(duration: a.duration + b.duration);
+  // A crossfade out of `a` pointed at `b`; with the boundary gone it is
+  // meaningless, so drop it (fades stay as they were).
+  final transitionOut = a.transitionOut.type == TransitionType.crossfade
+      ? const ClipTransition()
+      : a.transitionOut;
+  return a.copyWith(
+      duration: a.duration + b.duration, transitionOut: transitionOut);
 }
 
 /// Audio tracks may never be trimmed shorter than this.

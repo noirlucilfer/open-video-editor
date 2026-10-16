@@ -364,7 +364,12 @@ class _EditorScreenState extends State<EditorScreen> {
     final found = _selectedClipId == null ? null : _findClip(_selectedClipId!);
     if (found == null) return;
     final (ti, ci, clip) = found;
-    final current = isIn ? clip.transitionIn : clip.transitionOut;
+    // Fade in/out and crossfade are mutually exclusive on the same edge.
+    final current = isIn
+        ? clip.transitionIn
+        : (clip.transitionOut.type == TransitionType.fade
+            ? clip.transitionOut
+            : const ClipTransition());
     const oneSec = Duration(seconds: 1);
     final updated = current.isEnabled
         ? const ClipTransition()
@@ -704,19 +709,20 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 
   /// Opacity for fade in/out transitions of the active clip.
+  /// (Crossfades render as hard cuts in preview; only true fades ramp.)
   double _fadeOpacity(Clip? clip) {
     if (clip == null) return 1.0;
     var opacity = 1.0;
     final pos = _player.position;
     final tIn = clip.transitionIn;
-    if (tIn.isEnabled) {
+    if (tIn.isEnabled && tIn.type == TransitionType.fade) {
       final elapsed = pos - clip.timelineStart;
       if (elapsed < tIn.duration) {
         opacity *= elapsed.inMilliseconds / tIn.duration.inMilliseconds;
       }
     }
     final tOut = clip.transitionOut;
-    if (tOut.isEnabled) {
+    if (tOut.isEnabled && tOut.type == TransitionType.fade) {
       final remaining = clip.timelineEnd - pos;
       if (remaining < tOut.duration) {
         opacity *= remaining.inMilliseconds / tOut.duration.inMilliseconds;
@@ -871,6 +877,7 @@ class _EditorScreenState extends State<EditorScreen> {
   Widget _buildFadeRow() {
     final clip = _selectedClip;
     if (clip == null) return const SizedBox.shrink();
+    final crossfadeOut = clip.transitionOut.type == TransitionType.crossfade;
     return Container(
       color: Colors.grey.shade900,
       padding: const EdgeInsets.only(bottom: 4),
@@ -885,10 +892,48 @@ class _EditorScreenState extends State<EditorScreen> {
           const SizedBox(width: 8),
           FilterChip(
             label: const Text('Fade out'),
-            selected: clip.transitionOut.isEnabled,
+            selected: clip.transitionOut.isEnabled &&
+                clip.transitionOut.type == TransitionType.fade,
             onSelected: (_) => _toggleFade(false),
           ),
+          const SizedBox(width: 8),
+          FilterChip(
+            label: const Text('Crossfade'),
+            selected: crossfadeOut,
+            onSelected: _canCrossfade ? (_) => _toggleCrossfade() : null,
+          ),
         ],
+      ),
+    );
+  }
+
+  /// True when the selected clip is immediately followed by another clip.
+  bool get _canCrossfade {
+    final found = _selectedClipId == null ? null : _findClip(_selectedClipId!);
+    if (found == null) return false;
+    final (ti, ci, clip) = found;
+    final clips = _project.tracks[ti].clips;
+    return ci + 1 < clips.length &&
+        clips[ci + 1].timelineStart == clip.timelineEnd;
+  }
+
+  /// Toggles a 1s crossfade on the selected clip's out-transition.
+  /// Mutually exclusive with fade-out.
+  Future<void> _toggleCrossfade() async {
+    final found = _selectedClipId == null ? null : _findClip(_selectedClipId!);
+    if (found == null) return;
+    final (ti, ci, clip) = found;
+    final isCrossfade = clip.transitionOut.type == TransitionType.crossfade;
+    await _replaceClip(
+      ti,
+      ci,
+      clip.copyWith(
+        transitionOut: isCrossfade
+            ? const ClipTransition()
+            : const ClipTransition(
+                type: TransitionType.crossfade,
+                duration: Duration(seconds: 1),
+              ),
       ),
     );
   }

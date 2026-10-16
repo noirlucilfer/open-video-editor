@@ -317,6 +317,115 @@ void main() {
       expect(fc, contains('[sv0]format=yuv420p[outv]'));
     });
 
+    test('crossfade boundary uses xfade + acrossfade', () {
+      final c1 = _clip('c1', '/tmp/a.mp4', Duration.zero,
+          const Duration(seconds: 4));
+      final c2 = _clip('c2', '/tmp/b.mp4', const Duration(seconds: 4),
+          const Duration(seconds: 4));
+      final withXfade = c1.copyWith(
+        transitionOut: const ClipTransition(
+            type: TransitionType.crossfade, duration: Duration(seconds: 1)),
+      );
+      final args = buildExportCommand(
+        _project(clips: [withXfade, c2]),
+        _config('/tmp/o.mp4'),
+      );
+      final fc = args[args.indexOf('-filter_complex') + 1];
+      // offset = 4s - 1s = 3s into the first clip
+      expect(
+          fc,
+          contains(
+              '[v0][v1]xfade=transition=fade:duration=1.0:offset=3.0[x1]'));
+      expect(fc, contains('[a0][a1]acrossfade=d=1.0[xa1]'));
+      expect(fc, contains('[x1]copy[catv]'));
+      expect(fc, contains('[xa1]acopy[cata]'));
+      // no plain concat of the two clips
+      expect(fc, isNot(contains('concat=n=2:v=1:a=1')));
+      // output is 4 + 4 - 1 = 7s
+      expect(
+          exportDuration(_project(clips: [withXfade, c2])),
+          const Duration(seconds: 7));
+    });
+
+    test('mixed boundaries: xfade where set, concat elsewhere', () {
+      Clip cx(String id, String path, Duration start) =>
+          _clip(id, path, start, const Duration(seconds: 4));
+      final c1 = cx('c1', '/tmp/a.mp4', Duration.zero).copyWith(
+        transitionOut: const ClipTransition(
+            type: TransitionType.crossfade, duration: Duration(seconds: 1)),
+      );
+      final c2 = cx('c2', '/tmp/b.mp4', const Duration(seconds: 4));
+      final c3 = cx('c3', '/tmp/c.mp4', const Duration(seconds: 8));
+      final args = buildExportCommand(
+        _project(clips: [c1, c2, c3]),
+        _config('/tmp/o.mp4'),
+      );
+      final fc = args[args.indexOf('-filter_complex') + 1];
+      expect(fc, contains('xfade=transition=fade:duration=1.0:offset=3.0[x1]'));
+      // second boundary is a plain concat of the xfade result and v2
+      expect(fc, contains('[x1][v2]concat=n=2:v=1:a=0[cv2]'));
+      expect(fc, contains('[xa1][a2]concat=n=2:v=0:a=1[ca2]'));
+      expect(
+          exportDuration(_project(clips: [c1, c2, c3])),
+          const Duration(seconds: 11));
+    });
+
+    test('crossfade shifts later overlays and audio delays', () {
+      final c1 = _clip('c1', '/tmp/a.mp4', Duration.zero,
+          const Duration(seconds: 4));
+      final c2 = _clip('c2', '/tmp/b.mp4', const Duration(seconds: 4),
+          const Duration(seconds: 4));
+      final withXfade = c1.copyWith(
+        transitionOut: const ClipTransition(
+            type: TransitionType.crossfade, duration: Duration(seconds: 2)),
+      );
+      final project = TimelineProject(
+        tracks: [
+          VideoTrack(id: 'v1', clips: [withXfade, c2])
+        ],
+        overlays: const [
+          TextOverlay(
+              id: 't', text: 'hi', start: Duration(seconds: 5), end: Duration(seconds: 6)),
+        ],
+        audioTracks: const [
+          AudioTrack(
+              id: 'a',
+              path: '/tmp/s.mp3',
+              name: 's.mp3',
+              timelineStart: Duration(seconds: 5),
+              trimStart: Duration.zero,
+              duration: Duration(seconds: 1),
+              sourceDuration: Duration(seconds: 10)),
+        ],
+      );
+      final args = buildExportCommand(project, _config('/tmp/o.mp4'));
+      final fc = args[args.indexOf('-filter_complex') + 1];
+      // 5s and 6s shift 2s earlier (transition at 4s boundary)
+      expect(fc, contains("enable='between(t,3.0,4.0)'"));
+      expect(fc, contains('adelay=3000|3000'));
+    });
+
+    test('crossfade longer than a clip is clamped', () {
+      final c1 = _clip('c1', '/tmp/a.mp4', Duration.zero,
+          const Duration(seconds: 4));
+      final c2 = _clip('c2', '/tmp/b.mp4', const Duration(seconds: 4),
+          const Duration(seconds: 1));
+      final withXfade = c1.copyWith(
+        transitionOut: const ClipTransition(
+            type: TransitionType.crossfade, duration: Duration(seconds: 9)),
+      );
+      final args = buildExportCommand(
+        _project(clips: [withXfade, c2]),
+        _config('/tmp/o.mp4'),
+      );
+      final fc = args[args.indexOf('-filter_complex') + 1];
+      // clamped to the 1s clip: duration=1.0, offset=4-1=3
+      expect(
+          fc,
+          contains(
+              '[v0][v1]xfade=transition=fade:duration=1.0:offset=3.0[x1]'));
+    });
+
     test('custom video codec replaces libx264, drops x264-only flags', () {
       final args = buildExportCommand(
         _project(clips: [
