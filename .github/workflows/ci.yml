@@ -21,6 +21,9 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Install ffmpeg (integration tests shell out to it)
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
       - name: Analyze
         run: flutter analyze
 
