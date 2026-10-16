@@ -13,13 +13,17 @@ import 'ffmpeg_runner.dart';
 import 'video_engine.dart';
 
 class FfmpegVideoEngine implements VideoEngine {
-  FfmpegVideoEngine({FFmpegRunner? runner, this.fontFile})
-      : _runner = runner ?? ProcessFFmpegRunner();
+  FfmpegVideoEngine({FFmpegRunner? runner, this.fontFile, this.fontFileProvider})
+      : _runner = runner ?? createDefaultRunner();
 
   final FFmpegRunner _runner;
 
   /// Typeface used for drawtext overlays, if any.
   final String? fontFile;
+
+  /// Lazy font resolver (e.g. copy a bundled font to a temp file on mobile).
+  /// Used when [fontFile] is null.
+  final Future<String?> Function()? fontFileProvider;
 
   final _positionController = StreamController<Duration>.broadcast();
   bool _initialized = false;
@@ -82,7 +86,8 @@ class FfmpegVideoEngine implements VideoEngine {
     void Function(double progress)? onProgress,
   }) async {
     _requireInitialized();
-    final args = buildExportCommand(project, config, fontFile: fontFile);
+    final font = fontFile ?? await fontFileProvider?.call();
+    final args = buildExportCommand(project, config, fontFile: font);
     final code = await _runner.run(
       args,
       total: project.duration,

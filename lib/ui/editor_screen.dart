@@ -13,6 +13,7 @@ import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:video_player/video_player.dart' hide VideoTrack;
 
+import '../engine/export_font.dart';
 import '../engine/ffmpeg_engine.dart';
 import '../engine/timeline_ops.dart';
 import '../engine/video_engine.dart';
@@ -44,7 +45,11 @@ class _EditorScreenState extends State<EditorScreen> {
   @override
   void initState() {
     super.initState();
-    _engine = widget.engine ?? FfmpegVideoEngine();
+    _engine = widget.engine ??
+        FfmpegVideoEngine(
+          // Bundled font for drawtext on mobile; web export is disabled.
+          fontFileProvider: kIsWeb ? null : ensureExportFont,
+        );
     _project = widget.initialProject ?? _project;
     _player = TimelinePlayer();
     _player.addListener(_onPlayerChanged);

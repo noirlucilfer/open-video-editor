@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_video_editor/engine/ffmpeg_command.dart';
+import 'package:open_video_editor/engine/ffmpeg_runner.dart';
 import 'package:open_video_editor/engine/video_engine.dart';
 
 TimelineProject _project({
@@ -176,6 +177,38 @@ void main() {
       );
       final fc = args[args.indexOf('-filter_complex') + 1];
       expect(fc, contains('aevalsrc=0:d=5.0:s=44100'));
+    });
+
+    test('default codec is libx264 with x264 quality flags', () {
+      final args = buildExportCommand(
+        _project(clips: [
+          _clip('c1', '/tmp/a.mp4', Duration.zero,
+              const Duration(seconds: 2)),
+        ]),
+        _config('/tmp/o.mp4'),
+      );
+      expect(args[args.indexOf('-c:v') + 1], 'libx264');
+      expect(args, contains('-preset'));
+      expect(args, contains('-crf'));
+    });
+
+    test('custom video codec replaces libx264, drops x264-only flags', () {
+      final args = buildExportCommand(
+        _project(clips: [
+          _clip('c1', '/tmp/a.mp4', Duration.zero,
+              const Duration(seconds: 2)),
+        ]),
+        ExportConfig(outputPath: '/tmp/o.mp4', videoCodec: 'h264_mediacodec'),
+      );
+      expect(args[args.indexOf('-c:v') + 1], 'h264_mediacodec');
+      expect(args, isNot(contains('-preset')));
+      expect(args, isNot(contains('-crf')));
+    });
+  });
+
+  group('createDefaultRunner', () {
+    test('picks subprocess runner on desktop', () {
+      expect(createDefaultRunner(), isA<ProcessFFmpegRunner>());
     });
   });
 }

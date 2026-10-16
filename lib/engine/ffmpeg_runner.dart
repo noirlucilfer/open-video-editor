@@ -1,15 +1,19 @@
 // Runs ffmpeg as a subprocess and reports progress.
 //
 // The runner is an interface so platforms pick their implementation:
+//   - Android/iOS/macOS: [FFmpegKitRunner] (lib/engine/ffmpeg_kit_runner.dart)
 //   - desktop / tests: [ProcessFFmpegRunner] shells out to an ffmpeg binary
-//   - Android/iOS: an ffmpeg-kit based runner implementing the same
-//     interface (ffmpeg_kit_flutter_new: FFmpegKit.executeAsync with a
-//     statistics callback mapping time -> progress)
-//   - web: not supported (no local ffmpeg); export is disabled in the UI.
+//   - web: not supported; export is disabled in the UI.
+//
+// Use [createDefaultRunner] to pick automatically.
 
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+
+import 'package:flutter/foundation.dart';
+
+import 'ffmpeg_kit_runner.dart';
 
 /// Executes ffmpeg. Returns the process exit code (0 = success).
 abstract class FFmpegRunner {
@@ -18,6 +22,26 @@ abstract class FFmpegRunner {
     Duration? total,
     void Function(double progress)? onProgress,
   });
+}
+
+/// Picks the right [FFmpegRunner] for the current platform.
+FFmpegRunner createDefaultRunner() {
+  if (kIsWeb) return const _UnsupportedRunner();
+  if (Platform.isAndroid || Platform.isIOS) return FFmpegKitRunner();
+  return ProcessFFmpegRunner();
+}
+
+/// Runner that fails fast with a clear error (used on web).
+class _UnsupportedRunner implements FFmpegRunner {
+  const _UnsupportedRunner();
+
+  @override
+  Future<int> run(
+    List<String> args, {
+    Duration? total,
+    void Function(double progress)? onProgress,
+  }) =>
+      throw UnsupportedError('FFmpeg export is not supported on this platform');
 }
 
 /// Runs a locally installed ffmpeg binary via dart:io.

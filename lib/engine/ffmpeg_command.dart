@@ -86,11 +86,15 @@ List<String> buildExportCommand(
     '-map',
     '[cata]',
     '-c:v',
-    'libx264',
-    '-preset',
-    'veryfast',
-    '-crf',
-    '23',
+    config.videoCodec,
+    // x264-specific quality settings; hardware encoders use their own
+    // defaults (tune via videoBitrate in a future pass).
+    if (config.videoCodec == 'libx264') ...[
+      '-preset',
+      'veryfast',
+      '-crf',
+      '23',
+    ],
     '-r',
     '${config.fps}',
     '-c:a',

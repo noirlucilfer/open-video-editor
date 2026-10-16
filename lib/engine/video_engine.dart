@@ -240,6 +240,7 @@ class ExportConfig {
     this.height = 1920,
     this.fps = 30,
     this.videoBitrate = 8 * 1000 * 1000,
+    this.videoCodec = 'libx264',
   });
 
   final String outputPath;
@@ -247,6 +248,11 @@ class ExportConfig {
   final int height;
   final int fps;
   final int videoBitrate;
+
+  /// Video encoder, e.g. 'libx264'. Use a platform hardware encoder
+  /// ('h264_mediacodec' / 'h264_videotoolbox') with an LGPL ffmpeg-kit
+  /// variant to avoid GPL codecs.
+  final String videoCodec;
 }
 
 /// What the active engine implementation can do.
