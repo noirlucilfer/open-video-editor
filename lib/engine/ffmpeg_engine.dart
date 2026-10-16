@@ -1,22 +1,26 @@
 // FFmpeg-backed implementation of [VideoEngine].
 //
-// Currently a structural stub: it satisfies the interface so the UI can be
-// built and tested, but every media operation throws [UnimplementedError].
-//
-// Integration plan (TODO):
-//  1. Add `ffmpeg_kit_flutter` (mobile) for decode/filter/encode via FFmpeg.
-//  2. For preview playback, drive a platform video player from the engine's
-//     position stream and composite overlays in Flutter.
-//  3. For export, translate the [TimelineProject] into an FFmpeg filter
-//     graph (concat, trim, overlay, drawtext) and run it off the UI thread.
-//  4. On web, swap this for an ffmpeg.wasm-based engine behind the same
-//     [VideoEngine] interface.
+// Export is real: [buildExportCommand] translates the [TimelineProject]
+// into an ffmpeg CLI invocation (trim/concat per clip, color filters,
+// fades, drawtext overlays, libx264+aac encode) and an [FFmpegRunner]
+// executes it. Preview playback is still driven by video_player in the UI
+// layer (see lib/playback/timeline_player.dart).
 
 import 'dart:async';
 
+import 'ffmpeg_command.dart';
+import 'ffmpeg_runner.dart';
 import 'video_engine.dart';
 
 class FfmpegVideoEngine implements VideoEngine {
+  FfmpegVideoEngine({FFmpegRunner? runner, this.fontFile})
+      : _runner = runner ?? ProcessFFmpegRunner();
+
+  final FFmpegRunner _runner;
+
+  /// Typeface used for drawtext overlays, if any.
+  final String? fontFile;
+
   final _positionController = StreamController<Duration>.broadcast();
   bool _initialized = false;
   TimelineProject? _project;
@@ -78,9 +82,15 @@ class FfmpegVideoEngine implements VideoEngine {
     void Function(double progress)? onProgress,
   }) async {
     _requireInitialized();
-    // TODO: translate the project into an FFmpeg filter graph and run it,
-    // reporting progress via onProgress.
-    throw UnimplementedError('Export not wired to FFmpeg yet');
+    final args = buildExportCommand(project, config, fontFile: fontFile);
+    final code = await _runner.run(
+      args,
+      total: project.duration,
+      onProgress: onProgress,
+    );
+    if (code != 0) {
+      throw Exception('FFmpeg export failed with exit code $code');
+    }
   }
 
   @override

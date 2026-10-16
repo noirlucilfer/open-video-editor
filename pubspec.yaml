@@ -12,6 +12,7 @@ dependencies:
   cupertino_icons: ^1.0.8
   image_picker: ^1.2.4
   video_player: ^2.14.1
+  path_provider: ^2.1.6
 
 dev_dependencies:
   flutter_test:

@@ -8,7 +8,9 @@
 // (drag handles), split at the playhead, merged with its neighbour,
 // or deleted.
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:video_player/video_player.dart' hide VideoTrack;
 
 import '../engine/ffmpeg_engine.dart';
@@ -20,7 +22,13 @@ import '../playback/timeline_player.dart';
 import 'timeline/timeline_view.dart';
 
 class EditorScreen extends StatefulWidget {
-  const EditorScreen({super.key});
+  const EditorScreen({super.key, this.engine, this.initialProject});
+
+  /// Injected engine (tests); defaults to [FfmpegVideoEngine].
+  final VideoEngine? engine;
+
+  /// Injected project (tests); defaults to an empty project.
+  final TimelineProject? initialProject;
 
   @override
   State<EditorScreen> createState() => _EditorScreenState();
@@ -30,14 +38,14 @@ class _EditorScreenState extends State<EditorScreen> {
   late final VideoEngine _engine;
   late final TimelinePlayer _player;
   final MediaPicker _picker = MediaPicker();
-  TimelineProject _project = const TimelineProject();
-  String? _selectedClipId;
+  TimelineProject _project = const TimelineProject();  String? _selectedClipId;
   bool _adding = false;
 
   @override
   void initState() {
     super.initState();
-    _engine = FfmpegVideoEngine();
+    _engine = widget.engine ?? FfmpegVideoEngine();
+    _project = widget.initialProject ?? _project;
     _player = TimelinePlayer();
     _player.addListener(_onPlayerChanged);
     _engine.initialize();
@@ -306,19 +314,70 @@ class _EditorScreenState extends State<EditorScreen> {
     );
   }
 
-  Future<void> _export() async {    const config = ExportConfig(outputPath: '/tmp/open_video_editor_out.mp4');
+  Future<void> _export() async {
+    if (kIsWeb) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text('Export belum didukung di web (butuh ffmpeg)')),
+        );
+      }
+      return;
+    }
+    if (_project.tracks.every((t) => t.clips.isEmpty)) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Timeline kosong, belum ada yang diekspor')),
+        );
+      }
+      return;
+    }
+
+    final dir = await getTemporaryDirectory();
+    final outPath =
+        '${dir.path}/ove_export_${DateTime.now().millisecondsSinceEpoch}.mp4';
+    final progress = ValueNotifier<double>(0);
+    if (!mounted) return;
+    // ignore: use_build_context_synchronously
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => AlertDialog(
+        title: const Text('Mengekspor video...'),
+        content: ValueListenableBuilder<double>(
+          valueListenable: progress,
+          builder: (_, p, __) => Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              LinearProgressIndicator(value: p),
+              const SizedBox(height: 8),
+              Text('${(p * 100).round()}%'),
+            ],
+          ),
+        ),
+      ),
+    );
     try {
       await _engine.exportProject(
         _project,
-        config,
-        onProgress: (p) => debugPrint('export ${(p * 100).round()}%'),
+        ExportConfig(outputPath: outPath),
+        onProgress: (p) => progress.value = p,
       );
-    } on UnimplementedError {
       if (mounted) {
+        Navigator.of(context).pop(); // close progress dialog
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Export belum diimplementasikan')),
+          SnackBar(content: Text('Tersimpan: $outPath')),
         );
       }
+    } catch (e) {
+      if (mounted) {
+        Navigator.of(context).pop();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Export gagal: $e')),
+        );
+      }
+    } finally {
+      progress.dispose();
     }
   }
 
