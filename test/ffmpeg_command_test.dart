@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_video_editor/engine/ffmpeg_command.dart';
 import 'package:open_video_editor/engine/ffmpeg_runner.dart';
+import 'package:open_video_editor/engine/timeline_ops.dart';
 import 'package:open_video_editor/engine/video_engine.dart';
 
 TimelineProject _project({
@@ -64,7 +65,8 @@ void main() {
       expect(args[args.indexOf('-i') + 1], '/tmp/a.mp4');
 
       final fc = args[args.indexOf('-filter_complex') + 1];
-      expect(fc, contains('[0:v]fps=30,scale=1080:1920,setpts=PTS-STARTPTS[v0]'));
+      expect(fc,
+          contains('[0:v]scale=1080:1920,setpts=PTS-STARTPTS,fps=30[v0]'));
       expect(
           fc,
           contains(
@@ -126,7 +128,8 @@ void main() {
         _config('/tmp/o.mp4'),
       );
       final fc = args[args.indexOf('-filter_complex') + 1];
-      expect(fc, contains('[0:v]fps=30,scale=1080:1920,negate,setpts=PTS-STARTPTS[v0]'));
+      expect(fc,
+          contains('[0:v]scale=1080:1920,negate,setpts=PTS-STARTPTS,fps=30[v0]'));
       expect(fc, contains('hue=s=0'));
     });
 
@@ -190,6 +193,128 @@ void main() {
       expect(args[args.indexOf('-c:v') + 1], 'libx264');
       expect(args, contains('-preset'));
       expect(args, contains('-crf'));
+    });
+
+    test('speed 2x: input spans full source segment, setpts + atempo applied',
+        () {
+      final clip = _clip('c1', '/tmp/a.mp4', Duration.zero,
+          const Duration(seconds: 4),
+          sourceStart: const Duration(seconds: 1));
+      // 4s of source at 2x -> 2s timeline; input still reads the 4s segment.
+      final fast = setClipSpeed(clip, 2.0);
+      expect(fast.duration, const Duration(seconds: 2));
+      final args = buildExportCommand(
+        _project(clips: [fast]),
+        _config('/tmp/o.mp4'),
+      );
+      final ss = args.indexOf('-ss');
+      expect(args.sublist(ss, ss + 4), ['-ss', '1.0', '-t', '4.0']);
+      final fc = args[args.indexOf('-filter_complex') + 1];
+      expect(fc, contains('setpts=(PTS-STARTPTS)/2'));
+      expect(fc, contains('atempo=2'));
+    });
+
+    test('speed 0.5x: atempo=0.5 slows audio', () {
+      final clip = _clip('c1', '/tmp/a.mp4', Duration.zero,
+          const Duration(seconds: 4));
+      final slow = setClipSpeed(clip, 0.5);
+      expect(slow.duration, const Duration(seconds: 8));
+      final args = buildExportCommand(
+        _project(clips: [slow]),
+        _config('/tmp/o.mp4'),
+      );
+      final ss = args.indexOf('-ss');
+      expect(args.sublist(ss, ss + 4), ['-ss', '0.0', '-t', '4.0']);
+      final fc = args[args.indexOf('-filter_complex') + 1];
+      expect(fc, contains('setpts=(PTS-STARTPTS)/0.5'));
+      expect(fc, contains('atempo=0.5'));
+    });
+
+    test('speed 4x chains atempo=2.0 twice', () {
+      final clip = _clip('c1', '/tmp/a.mp4', Duration.zero,
+          const Duration(seconds: 8));
+      final args = buildExportCommand(
+        _project(clips: [setClipSpeed(clip, 4.0)]),
+        _config('/tmp/o.mp4'),
+      );
+      final fc = args[args.indexOf('-filter_complex') + 1];
+      expect(fc, contains('atempo=2.0,atempo=2')); // chained: 4 = 2x2
+    });
+
+    test('audio track is delayed, volumed and mixed', () {
+      final project = _project(
+        clips: [
+          _clip('c1', '/tmp/a.mp4', Duration.zero,
+              const Duration(seconds: 6)),
+        ],
+      );
+      final withAudio = TimelineProject(
+        tracks: project.tracks,
+        audioTracks: [
+          const AudioTrack(
+            id: 'aud1',
+            path: '/tmp/song.mp3',
+            name: 'song.mp3',
+            timelineStart: Duration(seconds: 1),
+            trimStart: Duration.zero,
+            duration: Duration(seconds: 5),
+            sourceDuration: Duration(seconds: 30),
+            volume: 0.5,
+          ),
+        ],
+      );
+      final args = buildExportCommand(withAudio, _config('/tmp/o.mp4'));
+      // extra input after the clip input
+      final firstI = args.indexOf('-i');
+      final secondI = args.indexOf('-i', firstI + 1);
+      expect(args[secondI + 1], '/tmp/song.mp3');
+      expect(args.sublist(secondI - 4, secondI + 1),
+          ['-ss', '0.0', '-t', '5.0', '-i']);
+      final fc = args[args.indexOf('-filter_complex') + 1];
+      expect(
+          fc,
+          contains(
+              '[1:a]aresample=44100,aformat=channel_layouts=stereo,adelay=1000|1000,volume=0.5[am0]'));
+      expect(fc, contains('[cata][am0]amix=inputs=2:duration=first'));
+      expect(fc, contains('[outa]'));
+      // mixed audio is what gets mapped
+      expect(args[args.indexOf('-map', args.indexOf('[outv]')) + 1], '[outa]');
+    });
+
+    test('sticker becomes a scaled overlay with enable window', () {
+      final project = _project(
+        clips: [
+          _clip('c1', '/tmp/a.mp4', Duration.zero,
+              const Duration(seconds: 6)),
+        ],
+      );
+      final withSticker = TimelineProject(
+        tracks: project.tracks,
+        stickers: [
+          const StickerOverlay(
+            id: 's1',
+            path: '/tmp/sticker.png',
+            name: 'sticker.png',
+            start: Duration(seconds: 1),
+            end: Duration(seconds: 4),
+            x: 0.25,
+            y: 0.75,
+            scale: 2.0,
+          ),
+        ],
+      );
+      final args = buildExportCommand(withSticker, _config('/tmp/o.mp4'));
+      // looped image input: -loop 1 -t 3.0 -i /tmp/sticker.png
+      final loopIdx = args.indexOf('-loop');
+      expect(args.sublist(loopIdx, loopIdx + 5),
+          ['-loop', '1', '-t', '3.0', '-i']);
+      expect(args[loopIdx + 5], '/tmp/sticker.png');
+      final fc = args[args.indexOf('-filter_complex') + 1];
+      // 1080 * 0.25 * 2.0 = 540px wide
+      expect(fc, contains('[1:v]scale=540:-1[st0]'));
+      expect(fc, contains("overlay=x='(0.25*W-w/2)':y='(0.75*H-h/2)'"));
+      expect(fc, contains("enable='between(t,1.0,4.0)'"));
+      expect(fc, contains('[sv0]format=yuv420p[outv]'));
     });
 
     test('custom video codec replaces libx264, drops x264-only flags', () {

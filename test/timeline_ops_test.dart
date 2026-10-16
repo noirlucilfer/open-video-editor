@@ -137,5 +137,124 @@ void main() {
       expect(tryMergeClips(a, diffSrc), isNull);
       expect(tryMergeClips(a, srcGap), isNull);
     });
+
+    test('returns null when speeds differ', () {
+      const a = Clip(
+        id: 'a',
+        source: _src,
+        timelineStart: Duration(seconds: 0),
+        sourceStart: Duration.zero,
+        duration: Duration(seconds: 4),
+        speed: 2.0,
+      );
+      const b = Clip(
+        id: 'b',
+        source: _src,
+        timelineStart: Duration(seconds: 4),
+        sourceStart: Duration(seconds: 2),
+        duration: Duration(seconds: 4),
+      );
+      expect(tryMergeClips(a, b), isNull);
+    });
+
+    test('merges speed-adjusted source contiguity', () {
+      // a: timeline 0..2s @2x -> source 0..4s; b: timeline 2..4s @2x -> 4..8s.
+      const a = Clip(
+        id: 'a',
+        source: _src,
+        timelineStart: Duration(seconds: 0),
+        sourceStart: Duration.zero,
+        duration: Duration(seconds: 2),
+        speed: 2.0,
+      );
+      const b = Clip(
+        id: 'b',
+        source: _src,
+        timelineStart: Duration(seconds: 2),
+        sourceStart: Duration(seconds: 4),
+        duration: Duration(seconds: 2),
+        speed: 2.0,
+      );
+      final m = tryMergeClips(a, b);
+      expect(m, isNotNull);
+      expect(m!.duration, const Duration(seconds: 4));
+      expect(m.speed, 2.0);
+    });
+  });
+
+  group('setClipSpeed', () {
+    test('2x halves the timeline duration', () {
+      final c = setClipSpeed(_clip(), 2.0);
+      expect(c.speed, 2.0);
+      // 4s of source at 2x -> 8s? No: same 4s source segment at 2x -> 2s.
+      // _clip covers source 2s..6s = 4s of source.
+      expect(c.duration, const Duration(seconds: 2));
+      expect(c.sourceDuration, const Duration(seconds: 4));
+    });
+
+    test('0.5x doubles the timeline duration', () {
+      final c = setClipSpeed(_clip(), 0.5);
+      expect(c.speed, 0.5);
+      expect(c.duration, const Duration(seconds: 8));
+    });
+
+    test('clamps speed to 0.25..4.0', () {
+      expect(setClipSpeed(_clip(), 99).speed, maxClipSpeed);
+      expect(setClipSpeed(_clip(), 0.01).speed, minClipSpeed);
+    });
+
+    test('clamps duration to available source media', () {
+      // _clip covers source 2s..6s (4s). At 0.25x that stretches to 16s of
+      // timeline — inside the 8s of remaining source (8 / 0.25 = 32s cap).
+      final c = setClipSpeed(_clip(), 0.25);
+      expect(c.duration, const Duration(seconds: 16));
+      // A clip already at the source end cannot grow past it: source
+      // 8s..10s (2s) at 0.5x -> 4s timeline, within the 2s of source.
+      const tail = Clip(
+        id: 't',
+        source: _src,
+        timelineStart: Duration(seconds: 8),
+        sourceStart: Duration(seconds: 8),
+        duration: Duration(seconds: 2),
+      );
+      final slow = setClipSpeed(tail, 0.5);
+      expect(slow.duration, const Duration(seconds: 4));
+      expect(slow.sourceStart + slow.sourceDuration,
+          lessThanOrEqualTo(_src.duration));
+    });
+
+    test('respects maxEnd to avoid overlapping the next clip', () {
+      final c =
+          setClipSpeed(_clip(), 0.5, maxEnd: const Duration(seconds: 10));
+      // 4s of source at 0.5x wants 8s, but capped at 10s - 5s = 5s.
+      expect(c.timelineEnd, const Duration(seconds: 10));
+      expect(c.duration, const Duration(seconds: 5));
+    });
+  });
+
+  group('speed-aware trim/split', () {
+    test('trimClipStart shifts source by delta * speed', () {
+      final fast = setClipSpeed(_clip(), 2.0); // 5s..7s, source 2s..6s
+      final c = trimClipStart(fast, const Duration(seconds: 6));
+      expect(c.timelineStart, const Duration(seconds: 6));
+      // 1s timeline delta * 2 = 2s source shift
+      expect(c.sourceStart, const Duration(seconds: 4));
+      expect(c.duration, const Duration(seconds: 1));
+    });
+
+    test('trimClipEnd clamps to source end scaled by speed', () {
+      final fast = setClipSpeed(_clip(), 2.0); // source 2s..6s of 10s
+      final c = trimClipEnd(fast, const Duration(seconds: 99));
+      // max: 5s + (10s - 2s) / 2 = 9s
+      expect(c.timelineEnd, const Duration(seconds: 9));
+    });
+
+    test('splitClipAt scales source offset by speed', () {
+      final fast = setClipSpeed(_clip(), 2.0); // 5s..7s timeline, 2s..6s src
+      final (first, second) = splitClipAt(fast, const Duration(seconds: 6));
+      expect(first.duration, const Duration(seconds: 1));
+      expect(second.sourceStart, const Duration(seconds: 4));
+      expect(second.speed, 2.0);
+    });
   });
 }

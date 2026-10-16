@@ -10,6 +10,7 @@
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:audioplayers/audioplayers.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:video_player/video_player.dart' hide VideoTrack;
 
@@ -18,6 +19,8 @@ import '../engine/ffmpeg_engine.dart';
 import '../engine/timeline_ops.dart';
 import '../engine/video_engine.dart';
 import '../media/media_picker.dart';
+import '../media/sticker_image.dart';
+import '../playback/audio_source.dart';
 import '../playback/player_controller_factory.dart';
 import '../playback/timeline_player.dart';
 import 'timeline/timeline_view.dart';
@@ -99,6 +102,20 @@ class _EditorScreenState extends State<EditorScreen> {
     await _player.setProject(_project);
   }
 
+  /// Copies the current project, replacing only the given parts.
+  TimelineProject _with({
+    List<VideoTrack>? tracks,
+    List<TextOverlay>? overlays,
+    List<AudioTrack>? audioTracks,
+    List<StickerOverlay>? stickers,
+  }) =>
+      TimelineProject(
+        tracks: tracks ?? _project.tracks,
+        overlays: overlays ?? _project.overlays,
+        audioTracks: audioTracks ?? _project.audioTracks,
+        stickers: stickers ?? _project.stickers,
+      );
+
   /// Picks a video, probes its duration, and appends it as a clip.
   Future<void> _pickAndAdd() async {
     if (_adding) return;
@@ -140,8 +157,7 @@ class _EditorScreenState extends State<EditorScreen> {
         final first = tracks.first;
         tracks[0] = VideoTrack(id: first.id, clips: [...first.clips, clip]);
       }
-      await _updateProject(
-          TimelineProject(tracks: tracks, overlays: _project.overlays));
+      await _updateProject(_with(tracks: tracks));
     } finally {
       if (mounted) setState(() => _adding = false);
     }
@@ -153,8 +169,7 @@ class _EditorScreenState extends State<EditorScreen> {
     clips[clipIndex] = clip;
     tracks[trackIndex] =
         VideoTrack(id: tracks[trackIndex].id, clips: clips);
-    await _updateProject(
-        TimelineProject(tracks: tracks, overlays: _project.overlays));
+    await _updateProject(_with(tracks: tracks));
   }
 
   Future<void> _trimClip(
@@ -180,8 +195,7 @@ class _EditorScreenState extends State<EditorScreen> {
     clips.replaceRange(ci, ci + 1, [first, second]);
     tracks[ti] = VideoTrack(id: tracks[ti].id, clips: clips);
     _selectedClipId = first.id;
-    await _updateProject(
-        TimelineProject(tracks: tracks, overlays: _project.overlays));
+    await _updateProject(_with(tracks: tracks));
   }
 
   Future<void> _mergeSelected() async {
@@ -205,8 +219,7 @@ class _EditorScreenState extends State<EditorScreen> {
     updated.replaceRange(ci, ci + 2, [merged]);
     tracks[ti] = VideoTrack(id: tracks[ti].id, clips: updated);
     _selectedClipId = merged.id;
-    await _updateProject(
-        TimelineProject(tracks: tracks, overlays: _project.overlays));
+    await _updateProject(_with(tracks: tracks));
   }
 
   Future<void> _deleteSelected() async {
@@ -217,8 +230,7 @@ class _EditorScreenState extends State<EditorScreen> {
     final clips = List<Clip>.from(tracks[ti].clips)..removeAt(ci);
     tracks[ti] = VideoTrack(id: tracks[ti].id, clips: clips);
     _selectedClipId = null;
-    await _updateProject(
-        TimelineProject(tracks: tracks, overlays: _project.overlays));
+    await _updateProject(_with(tracks: tracks));
   }
 
   /// Shows a dialog to input overlay text. Returns null when cancelled.
@@ -259,10 +271,7 @@ class _EditorScreenState extends State<EditorScreen> {
       start: start,
       end: start + const Duration(seconds: 3),
     );
-    await _updateProject(TimelineProject(
-      tracks: _project.tracks,
-      overlays: [..._project.overlays, overlay],
-    ));
+    await _updateProject(_with(overlays: [..._project.overlays, overlay]));
   }
 
   Future<void> _onOverlayTap(TextOverlay overlay) async {
@@ -286,21 +295,17 @@ class _EditorScreenState extends State<EditorScreen> {
       ),
     );
     if (action == 'delete') {
-      await _updateProject(TimelineProject(
-        tracks: _project.tracks,
-        overlays:
-            _project.overlays.where((o) => o.id != overlay.id).toList(),
-      ));
+      await _updateProject(_with(
+          overlays:
+              _project.overlays.where((o) => o.id != overlay.id).toList()));
     } else if (action == 'edit') {
       final text = await _showTextDialog(initial: overlay.text);
       if (text == null || text.trim().isEmpty) return;
-      await _updateProject(TimelineProject(
-        tracks: _project.tracks,
-        overlays: _project.overlays
-            .map((o) =>
-                o.id == overlay.id ? o.copyWith(text: text.trim()) : o)
-            .toList(),
-      ));
+      await _updateProject(_with(
+          overlays: _project.overlays
+              .map((o) =>
+                  o.id == overlay.id ? o.copyWith(text: text.trim()) : o)
+              .toList()));
     }
   }
 
@@ -328,6 +333,236 @@ class _EditorScreenState extends State<EditorScreen> {
         transitionOut: isIn ? clip.transitionOut : updated,
       ),
     );
+  }
+
+  Future<void> _setClipSpeed(double speed) async {
+    final found = _selectedClipId == null ? null : _findClip(_selectedClipId!);
+    if (found == null) return;
+    final (ti, ci, clip) = found;
+    // Don't let a slower clip grow over its neighbour.
+    final clips = _project.tracks[ti].clips;
+    final maxEnd = ci + 1 < clips.length ? clips[ci + 1].timelineStart : null;
+    await _replaceClip(ti, ci, setClipSpeed(clip, speed, maxEnd: maxEnd));
+  }
+
+  Future<Duration?> _probeAudioDuration(String path) async {
+    final player = AudioPlayer();
+    try {
+      await player.setSource(audioSourceForPath(path));
+      return await player.getDuration();
+    } catch (e) {
+      debugPrint('audio probe failed: $e');
+      return null;
+    } finally {
+      await player.dispose();
+    }
+  }
+
+  /// Picks an audio file and adds it as a background track starting at 0.
+  Future<void> _pickAndAddAudio() async {
+    if (_adding) return;
+    setState(() => _adding = true);
+    try {
+      final picked = await _picker.pickAudio();
+      if (picked == null) return;
+      final sourceDuration = await _probeAudioDuration(picked.path);
+      if (sourceDuration == null || sourceDuration == Duration.zero) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Gagal membaca file audio')),
+          );
+        }
+        return;
+      }
+      final projectLen = _project.duration;
+      final duration = projectLen > Duration.zero
+          ? (sourceDuration < projectLen ? sourceDuration : projectLen)
+          : sourceDuration;
+      final track = AudioTrack(
+        id: 'aud-${DateTime.now().millisecondsSinceEpoch}',
+        path: picked.path,
+        name: picked.name,
+        timelineStart: Duration.zero,
+        trimStart: Duration.zero,
+        duration: duration,
+        sourceDuration: sourceDuration,
+      );
+      await _updateProject(
+          _with(audioTracks: [..._project.audioTracks, track]));
+    } finally {
+      if (mounted) setState(() => _adding = false);
+    }
+  }
+
+  Future<void> _onAudioTap(AudioTrack track) async {
+    var volume = track.volume;
+    final action = await showDialog<String>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: Text(track.name,
+              overflow: TextOverflow.ellipsis),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  const Text('Volume'),
+                  Expanded(
+                    child: Slider(
+                      value: volume,
+                      min: 0,
+                      max: 2,
+                      divisions: 20,
+                      label: '${(volume * 100).round()}%',
+                      onChanged: (v) =>
+                          setDialogState(() => volume = v),
+                    ),
+                  ),
+                ],
+              ),
+              TextButton.icon(
+                icon: const Icon(Icons.delete_outline, color: Colors.red),
+                label: const Text('Hapus',
+                    style: TextStyle(color: Colors.red)),
+                onPressed: () => Navigator.pop(ctx, 'delete'),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Batal'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, 'save'),
+              child: const Text('Simpan'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (action == 'delete') {
+      await _updateProject(_with(
+          audioTracks: _project.audioTracks
+              .where((t) => t.id != track.id)
+              .toList()));
+    } else if (action == 'save') {
+      await _updateProject(_with(
+          audioTracks: _project.audioTracks
+              .map((t) => t.id == track.id ? t.copyWith(volume: volume) : t)
+              .toList()));
+    }
+  }
+
+  /// Picks an image and pins it as a sticker for 3s from the playhead.
+  Future<void> _pickAndAddSticker() async {
+    if (_adding) return;
+    setState(() => _adding = true);
+    try {
+      final picked = await _picker.pickImage();
+      if (picked == null) return;
+      final start = _player.position;
+      final sticker = StickerOverlay(
+        id: 'stk-${DateTime.now().millisecondsSinceEpoch}',
+        path: picked.path,
+        name: picked.name,
+        start: start,
+        end: start + const Duration(seconds: 3),
+      );
+      await _updateProject(
+          _with(stickers: [..._project.stickers, sticker]));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text('Stiker ditambahkan — geser di preview')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _adding = false);
+    }
+  }
+
+  Future<void> _onStickerTap(StickerOverlay sticker) async {
+    var scale = sticker.scale;
+    final action = await showDialog<String>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: Text(sticker.name,
+              overflow: TextOverflow.ellipsis),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  const Text('Ukuran'),
+                  Expanded(
+                    child: Slider(
+                      value: scale,
+                      min: 0.25,
+                      max: 3,
+                      divisions: 11,
+                      label: '${scale.toStringAsFixed(2)}x',
+                      onChanged: (v) =>
+                          setDialogState(() => scale = v),
+                    ),
+                  ),
+                ],
+              ),
+              TextButton.icon(
+                icon: const Icon(Icons.delete_outline, color: Colors.red),
+                label: const Text('Hapus',
+                    style: TextStyle(color: Colors.red)),
+                onPressed: () => Navigator.pop(ctx, 'delete'),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Batal'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, 'save'),
+              child: const Text('Simpan'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (action == 'delete') {
+      await _updateProject(_with(
+          stickers:
+              _project.stickers.where((s) => s.id != sticker.id).toList()));
+    } else if (action == 'save') {
+      await _updateProject(_with(
+          stickers: _project.stickers
+              .map((s) => s.id == sticker.id ? s.copyWith(scale: scale) : s)
+              .toList()));
+    }
+  }
+
+  /// Moves a sticker by a fractional delta of the video frame.
+  Future<void> _moveSticker(String id, double dx, double dy) async {
+    final stickers = _project.stickers
+        .map((s) => s.id == id
+            ? s.copyWith(
+                x: (s.x + dx).clamp(0.0, 1.0),
+                y: (s.y + dy).clamp(0.0, 1.0),
+              )
+            : s)
+        .toList();
+    _project = _with(stickers: stickers);
+    // Lightweight update: don't rebuild audio players while dragging.
+    setState(() {});
+  }
+
+  List<StickerOverlay> _activeStickers() {
+    final pos = _player.position;
+    return _project.stickers
+        .where((s) => pos >= s.start && pos < s.end)
+        .toList();
   }
 
   Future<void> _export() async {
@@ -476,37 +711,68 @@ class _EditorScreenState extends State<EditorScreen> {
         video = Opacity(opacity: opacity, child: video);
       }
     }
-    return Stack(
-      alignment: Alignment.center,
-      children: [
-        video ??
-            Text(
-              _project.tracks.isEmpty
-                  ? 'Ketuk + untuk menambahkan video'
-                  : 'Preview @ ${_player.position.inSeconds}s',
-              style: const TextStyle(color: Colors.white70),
-            ),
-        for (final o in _activeOverlays())
-          Positioned.fill(
-            child: Align(
-              alignment: Alignment.center,
-              child: Padding(
-                padding: const EdgeInsets.all(24),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // The rect the video actually occupies (aspect-fit, centered).
+        var vw = constraints.maxWidth;
+        var vh = constraints.maxHeight;
+        var left = 0.0;
+        var top = 0.0;
+        if (controller != null && controller.value.isInitialized) {
+          final ar = controller.value.aspectRatio;
+          vw = constraints.maxWidth;
+          vh = vw / ar;
+          if (vh > constraints.maxHeight) {
+            vh = constraints.maxHeight;
+            vw = vh * ar;
+          }
+          left = (constraints.maxWidth - vw) / 2;
+          top = (constraints.maxHeight - vh) / 2;
+        }
+        return Stack(
+          children: [
+            Align(alignment: Alignment.center, child: video),
+            if (video == null)
+              Center(
                 child: Text(
-                  o.text,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: o.fontSize,
-                    color: Colors.white,
-                    shadows: const [
-                      Shadow(blurRadius: 8, color: Colors.black87),
-                    ],
+                  _project.tracks.isEmpty
+                      ? 'Ketuk + untuk menambahkan video'
+                      : 'Preview @ ${_player.position.inSeconds}s',
+                  style: const TextStyle(color: Colors.white70),
+                ),
+              ),
+            for (final o in _activeOverlays())
+              Positioned.fill(
+                child: Align(
+                  alignment: Alignment.center,
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Text(
+                      o.text,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: o.fontSize,
+                        color: Colors.white,
+                        shadows: const [
+                          Shadow(blurRadius: 8, color: Colors.black87),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
               ),
-            ),
-          ),
-      ],
+            for (final s in _activeStickers())
+              _DraggableSticker(
+                sticker: s,
+                videoLeft: left,
+                videoTop: top,
+                videoWidth: vw,
+                videoHeight: vh,
+                onMove: (dx, dy) => _moveSticker(s.id, dx / vw, dy / vh),
+              ),
+          ],
+        );
+      },
     );
   }
 
@@ -586,6 +852,36 @@ class _EditorScreenState extends State<EditorScreen> {
     );
   }
 
+  Widget _buildSpeedRow() {
+    final clip = _selectedClip;
+    if (clip == null) return const SizedBox.shrink();
+    const speeds = [0.5, 1.0, 1.5, 2.0];
+    return Container(
+      color: Colors.grey.shade900,
+      height: 46,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        children: [
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 6, vertical: 10),
+            child: Text('Speed',
+                style: TextStyle(color: Colors.white70, fontSize: 12)),
+          ),
+          for (final s in speeds)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 2),
+              child: ChoiceChip(
+                label: Text('${s}x'),
+                selected: clip.speed == s,
+                onSelected: (_) => _setClipSpeed(s),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -596,6 +892,16 @@ class _EditorScreenState extends State<EditorScreen> {
             icon: const Icon(Icons.text_fields),
             tooltip: 'Tambah teks',
             onPressed: _addTextOverlay,
+          ),
+          IconButton(
+            icon: const Icon(Icons.music_note),
+            tooltip: 'Tambah musik',
+            onPressed: _pickAndAddAudio,
+          ),
+          IconButton(
+            icon: const Icon(Icons.emoji_emotions_outlined),
+            tooltip: 'Tambah stiker',
+            onPressed: _pickAndAddSticker,
           ),
           IconButton(
             icon: _adding
@@ -648,10 +954,11 @@ class _EditorScreenState extends State<EditorScreen> {
             ),
           ),
           if (_selectedClipId != null) _buildClipToolbar(),
+          if (_selectedClipId != null) _buildSpeedRow(),
           if (_selectedClipId != null) _buildFilterRow(),
           if (_selectedClipId != null) _buildFadeRow(),
           SizedBox(
-            height: 220,
+            height: 260,
             child: TimelineView(
               project: _project,
               position: _player.position,
@@ -659,10 +966,55 @@ class _EditorScreenState extends State<EditorScreen> {
               onSeek: _player.seek,
               onClipSelected: (id) => setState(() => _selectedClipId = id),
               onOverlayTap: _onOverlayTap,
+              onAudioTap: _onAudioTap,
+              onStickerTap: _onStickerTap,
               onTrim: _trimClip,
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// A sticker rendered over the preview video, draggable to reposition.
+///
+/// Position is the sticker's normalized (0..1) center on the video frame,
+/// matching the export overlay math.
+class _DraggableSticker extends StatelessWidget {
+  const _DraggableSticker({
+    required this.sticker,
+    required this.videoLeft,
+    required this.videoTop,
+    required this.videoWidth,
+    required this.videoHeight,
+    required this.onMove,
+  });
+
+  final StickerOverlay sticker;
+  final double videoLeft;
+  final double videoTop;
+  final double videoWidth;
+  final double videoHeight;
+
+  /// Pixel delta of the drag; converted to fractional by the caller.
+  final void Function(double dx, double dy) onMove;
+
+  @override
+  Widget build(BuildContext context) {
+    if (videoWidth <= 0 || videoHeight <= 0) return const SizedBox.shrink();
+    // Base size = 25% of the video width, like the export overlay.
+    final size = videoWidth * 0.25 * sticker.scale;
+    final cx = videoLeft + sticker.x * videoWidth;
+    final cy = videoTop + sticker.y * videoHeight;
+    return Positioned(
+      left: cx - size / 2,
+      top: cy - size / 2,
+      width: size,
+      height: size,
+      child: GestureDetector(
+        onPanUpdate: (d) => onMove(d.delta.dx, d.delta.dy),
+        child: buildStickerImage(sticker.path),
       ),
     );
   }

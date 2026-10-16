@@ -25,6 +25,8 @@ class TimelineView extends StatefulWidget {
     this.onSeek,
     this.onClipSelected,
     this.onOverlayTap,
+    this.onAudioTap,
+    this.onStickerTap,
     this.onTrim,
     this.pixelsPerSecond = 24.0,
   });
@@ -35,6 +37,8 @@ class TimelineView extends StatefulWidget {
   final ValueChanged<Duration>? onSeek;
   final ValueChanged<String?>? onClipSelected;
   final ValueChanged<TextOverlay>? onOverlayTap;
+  final ValueChanged<AudioTrack>? onAudioTap;
+  final ValueChanged<StickerOverlay>? onStickerTap;
   final void Function(String clipId, TrimEdge edge, Duration newTimelinePos)?
       onTrim;
   final double pixelsPerSecond;
@@ -90,6 +94,18 @@ class _TimelineViewState extends State<TimelineView> {
                       overlays: widget.project.overlays,
                       pixelsPerSecond: widget.pixelsPerSecond,
                       onOverlayTap: widget.onOverlayTap,
+                    ),
+                  if (widget.project.audioTracks.isNotEmpty)
+                    _AudioLane(
+                      tracks: widget.project.audioTracks,
+                      pixelsPerSecond: widget.pixelsPerSecond,
+                      onAudioTap: widget.onAudioTap,
+                    ),
+                  if (widget.project.stickers.isNotEmpty)
+                    _StickerLane(
+                      stickers: widget.project.stickers,
+                      pixelsPerSecond: widget.pixelsPerSecond,
+                      onStickerTap: widget.onStickerTap,
                     ),
                   if (widget.project.tracks.isEmpty)
                     const _EmptyTimelineHint(),
@@ -377,6 +393,128 @@ class _OverlayLane extends StatelessWidget {
                   padding: const EdgeInsets.symmetric(horizontal: 6),
                   child: Text(
                     overlay.text,
+                    style:
+                        const TextStyle(color: Colors.black, fontSize: 11),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Lane showing background audio tracks as blocks. Tapping one opens
+/// volume/delete options.
+class _AudioLane extends StatelessWidget {
+  const _AudioLane({
+    required this.tracks,
+    required this.pixelsPerSecond,
+    this.onAudioTap,
+  });
+
+  final List<AudioTrack> tracks;
+  final double pixelsPerSecond;
+  final ValueChanged<AudioTrack>? onAudioTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 36,
+      margin: const EdgeInsets.symmetric(vertical: 2),
+      decoration: BoxDecoration(
+        color: Colors.grey.shade900,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Stack(
+        children: [
+          for (final track in tracks)
+            Positioned(
+              left: track.timelineStart.inMilliseconds / 1000 * pixelsPerSecond,
+              width: (track.timelineEnd - track.timelineStart).inMilliseconds /
+                  1000 *
+                  pixelsPerSecond,
+              top: 4,
+              bottom: 4,
+              child: GestureDetector(
+                onTap: () => onAudioTap?.call(track),
+                child: Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 1),
+                  decoration: BoxDecoration(
+                    color: Colors.green.shade700,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  alignment: Alignment.centerLeft,
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.music_note,
+                          size: 12, color: Colors.black),
+                      const SizedBox(width: 2),
+                      Expanded(
+                        child: Text(
+                          track.name,
+                          style: const TextStyle(
+                              color: Colors.black, fontSize: 11),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Lane showing sticker overlays as blocks. Tapping one opens edit/delete.
+class _StickerLane extends StatelessWidget {
+  const _StickerLane({
+    required this.stickers,
+    required this.pixelsPerSecond,
+    this.onStickerTap,
+  });
+
+  final List<StickerOverlay> stickers;
+  final double pixelsPerSecond;
+  final ValueChanged<StickerOverlay>? onStickerTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 36,
+      margin: const EdgeInsets.symmetric(vertical: 2),
+      decoration: BoxDecoration(
+        color: Colors.grey.shade900,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Stack(
+        children: [
+          for (final sticker in stickers)
+            Positioned(
+              left: sticker.start.inMilliseconds / 1000 * pixelsPerSecond,
+              width: (sticker.end - sticker.start).inMilliseconds /
+                  1000 *
+                  pixelsPerSecond,
+              top: 4,
+              bottom: 4,
+              child: GestureDetector(
+                onTap: () => onStickerTap?.call(sticker),
+                child: Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 1),
+                  decoration: BoxDecoration(
+                    color: Colors.purple.shade300,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  alignment: Alignment.centerLeft,
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  child: Text(
+                    '🖼 ${sticker.name}',
                     style:
                         const TextStyle(color: Colors.black, fontSize: 11),
                     overflow: TextOverflow.ellipsis,

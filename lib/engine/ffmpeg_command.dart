@@ -1,13 +1,18 @@
 // Translates a [TimelineProject] into an ffmpeg CLI invocation.
 //
 // Layout of the generated command:
-//   - one input per clip: `-ss <sourceStart> -t <duration> -i <path>`
-//     (input seeking trims both video and audio)
+//   - one input per clip: `-ss <sourceStart> -t <sourceDuration> -i <path>`
+//     (input seeking trims both video and audio; sourceDuration is the
+//     timeline duration divided by the clip speed)
+//   - one input per audio track: `-ss <trimStart> -t <duration> -i <path>`
+//   - one looped input per sticker image
 //   - filter_complex:
-//       per clip: fps + scale + color filter + fades + setpts (video),
-//                 aresample/aformat + asetpts (audio, or generated silence
-//                 when the source has no audio)
-//       concat all segments, then drawtext overlays, then format=yuv420p
+//       per clip: scale + color filter + setpts (speed) + fps + fades
+//                 (video), aresample/aformat + atempo (speed) + asetpts
+//                 (audio, or generated silence when the source has none)
+//       concat all segments
+//       audio tracks: adelay + volume, mixed with amix (duration=first)
+//       drawtext overlays, then sticker overlays, then format=yuv420p
 //   - output: libx264 + aac, faststart
 //
 // This is a pure function so the exact command can be unit-tested and
@@ -16,6 +21,12 @@
 import 'video_engine.dart';
 
 String _sec(Duration d) => (d.inMilliseconds / 1000).toString();
+
+/// Formats a speed multiplier for filter expressions (1.5, 0.5, ...).
+String _speedStr(double speed) {
+  final s = speed.toStringAsFixed(3).replaceAll(RegExp(r'\.?0+$'), '');
+  return s.isEmpty ? '0' : s;
+}
 
 /// Builds the full ffmpeg argument list (without the executable name).
 ///
@@ -40,9 +51,31 @@ List<String> buildExportCommand(
       '-ss',
       _sec(clip.sourceStart),
       '-t',
-      _sec(clip.duration),
+      _sec(clip.sourceDuration),
       '-i',
       clip.source.path,
+    ]);
+  }
+  final audioBase = clips.length;
+  for (final track in project.audioTracks) {
+    args.addAll([
+      '-ss',
+      _sec(track.trimStart),
+      '-t',
+      _sec(track.duration),
+      '-i',
+      track.path,
+    ]);
+  }
+  final stickerBase = audioBase + project.audioTracks.length;
+  for (final sticker in project.stickers) {
+    args.addAll([
+      '-loop',
+      '1',
+      '-t',
+      _sec(sticker.end - sticker.start),
+      '-i',
+      sticker.path,
     ]);
   }
 
@@ -50,16 +83,26 @@ List<String> buildExportCommand(
   for (var i = 0; i < clips.length; i++) {
     final clip = clips[i];
     final videoChain = <String>[
-      'fps=${config.fps}',
       'scale=${config.width}:${config.height}',
       ..._colorFilter(clip.filter),
+      // setpts before fps: retime first, then resample to the target rate
+      // so speed changes stay smooth instead of choppy.
+      if (clip.speed != 1.0)
+        'setpts=(PTS-STARTPTS)/${_speedStr(clip.speed)}'
+      else
+        'setpts=PTS-STARTPTS',
+      'fps=${config.fps}',
       ..._fades(clip),
-      'setpts=PTS-STARTPTS',
     ];
     filters.add('[$i:v]${videoChain.join(',')}[v$i]');
     if (clip.source.hasAudio) {
-      filters.add(
-          '[$i:a]aresample=44100,aformat=channel_layouts=stereo,asetpts=PTS-STARTPTS[a$i]');
+      final audioChain = <String>[
+        'aresample=44100',
+        'aformat=channel_layouts=stereo',
+        ..._atempo(clip.speed),
+        'asetpts=PTS-STARTPTS',
+      ];
+      filters.add('[$i:a]${audioChain.join(',')}[a$i]');
     } else {
       filters.add(
           'aevalsrc=0:d=${_sec(clip.duration)}:s=44100,aformat=channel_layouts=stereo[a$i]');
@@ -70,10 +113,43 @@ List<String> buildExportCommand(
   final maps = [for (var i = 0; i < clips.length; i++) '[v$i][a$i]'].join();
   filters.add('${maps}concat=n=${clips.length}:v=1:a=1[catv][cata]');
 
+  // Background audio tracks: delay to their timeline start, apply volume,
+  // then mix under the clip audio. duration=first keeps the project length.
+  var audioLabel = 'cata';
+  if (project.audioTracks.isNotEmpty) {
+    final mixInputs = <String>['[cata]'];
+    for (var j = 0; j < project.audioTracks.length; j++) {
+      final track = project.audioTracks[j];
+      final ms = track.timelineStart.inMilliseconds;
+      final chain = <String>[
+        'aresample=44100',
+        'aformat=channel_layouts=stereo',
+        'adelay=$ms|$ms',
+        'volume=${track.volume}',
+      ];
+      filters.add('[${audioBase + j}:a]${chain.join(',')}[am$j]');
+      mixInputs.add('[am$j]');
+    }
+    filters.add(
+        '${mixInputs.join()}amix=inputs=${mixInputs.length}:duration=first:dropout_transition=0[outa]');
+    audioLabel = 'outa';
+  }
+
   var videoLabel = 'catv';
   for (var i = 0; i < project.overlays.length; i++) {
     final next = 'ov$i';
     filters.add('[$videoLabel]${_drawtext(project.overlays[i], fontFile)}[$next]');
+    videoLabel = next;
+  }
+  for (var k = 0; k < project.stickers.length; k++) {
+    final sticker = project.stickers[k];
+    final w = (config.width * 0.25 * sticker.scale).round().clamp(8, 4096);
+    filters.add('[${stickerBase + k}:v]scale=$w:-1[st$k]');
+    final next = 'sv$k';
+    filters.add('[$videoLabel][st$k]'
+        "overlay=x='(${_num(sticker.x)}*W-w/2)':y='(${_num(sticker.y)}*H-h/2)'"
+        ":enable='between(t,${_sec(sticker.start)},${_sec(sticker.end)})'"
+        '[$next]');
     videoLabel = next;
   }
   filters.add('[$videoLabel]format=yuv420p[outv]');
@@ -84,7 +160,7 @@ List<String> buildExportCommand(
     '-map',
     '[outv]',
     '-map',
-    '[cata]',
+    '[$audioLabel]',
     '-c:v',
     config.videoCodec,
     // x264-specific quality settings; hardware encoders use their own
@@ -107,6 +183,26 @@ List<String> buildExportCommand(
     config.outputPath,
   ]);
   return args;
+}
+
+String _num(double v) =>
+    v.toStringAsFixed(3).replaceAll(RegExp(r'\.?0+$'), '');
+
+/// atempo only supports 0.5..2.0; chain filters for wider speeds.
+List<String> _atempo(double speed) {
+  if (speed == 1.0) return const [];
+  var s = speed;
+  final parts = <String>[];
+  while (s > 2.0) {
+    parts.add('atempo=2.0');
+    s /= 2;
+  }
+  while (s < 0.5) {
+    parts.add('atempo=0.5');
+    s *= 2;
+  }
+  parts.add('atempo=${_speedStr(s)}');
+  return parts;
 }
 
 /// Per-clip color filter chain for [filter].

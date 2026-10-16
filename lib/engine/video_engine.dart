@@ -126,6 +126,8 @@ class MediaSource {
 ///
 /// [sourceStart] is the trim offset inside the source file;
 /// [timelineStart] is where the clip begins on the timeline.
+/// [speed] scales playback: 2.0 plays twice as fast, so the clip consumes
+/// [duration] * [speed] of source media.
 class Clip {
   const Clip({
     required this.id,
@@ -133,21 +135,30 @@ class Clip {
     required this.timelineStart,
     required this.sourceStart,
     required this.duration,
+    this.speed = 1.0,
     this.filter = VideoFilter.none,
     this.transitionIn = const ClipTransition(),
     this.transitionOut = const ClipTransition(),
-  });
+  }) : assert(speed > 0, 'speed must be positive');
 
   final String id;
   final MediaSource source;
   final Duration timelineStart;
   final Duration sourceStart;
   final Duration duration;
+
+  /// Playback speed multiplier (1.0 = normal). Clamped to 0.25..4.0 by
+  /// [setClipSpeed] in timeline_ops.dart.
+  final double speed;
   final VideoFilter filter;
   final ClipTransition transitionIn;
   final ClipTransition transitionOut;
 
   Duration get timelineEnd => timelineStart + duration;
+
+  /// How much source media this clip consumes (timeline duration * speed).
+  Duration get sourceDuration =>
+      Duration(milliseconds: (duration.inMilliseconds * speed).round());
 
   Clip copyWith({
     String? id,
@@ -155,6 +166,7 @@ class Clip {
     Duration? timelineStart,
     Duration? sourceStart,
     Duration? duration,
+    double? speed,
     VideoFilter? filter,
     ClipTransition? transitionIn,
     ClipTransition? transitionOut,
@@ -165,6 +177,7 @@ class Clip {
         timelineStart: timelineStart ?? this.timelineStart,
         sourceStart: sourceStart ?? this.sourceStart,
         duration: duration ?? this.duration,
+        speed: speed ?? this.speed,
         filter: filter ?? this.filter,
         transitionIn: transitionIn ?? this.transitionIn,
         transitionOut: transitionOut ?? this.transitionOut,
@@ -210,15 +223,112 @@ class TextOverlay {
       );
 }
 
+/// A background music / audio track laid over the timeline.
+///
+/// [timelineStart] is where it starts on the timeline, [trimStart] the
+/// offset inside the audio file, [duration] how long it plays.
+class AudioTrack {
+  const AudioTrack({
+    required this.id,
+    required this.path,
+    required this.name,
+    required this.timelineStart,
+    required this.trimStart,
+    required this.duration,
+    required this.sourceDuration,
+    this.volume = 1.0,
+  });
+
+  final String id;
+
+  /// File path on mobile, blob URL on web.
+  final String path;
+  final String name;
+  final Duration timelineStart;
+  final Duration trimStart;
+  final Duration duration;
+  final Duration sourceDuration;
+  final double volume;
+
+  Duration get timelineEnd => timelineStart + duration;
+
+  AudioTrack copyWith({
+    Duration? timelineStart,
+    Duration? trimStart,
+    Duration? duration,
+    double? volume,
+  }) =>
+      AudioTrack(
+        id: id,
+        path: path,
+        name: name,
+        timelineStart: timelineStart ?? this.timelineStart,
+        trimStart: trimStart ?? this.trimStart,
+        duration: duration ?? this.duration,
+        sourceDuration: sourceDuration,
+        volume: volume ?? this.volume,
+      );
+}
+
+/// An image sticker pinned over the video between [start] and [end].
+///
+/// [x] and [y] are the normalized (0..1) center position on the frame;
+/// [scale] multiplies the base size (25% of the frame width).
+class StickerOverlay {
+  const StickerOverlay({
+    required this.id,
+    required this.path,
+    required this.name,
+    required this.start,
+    required this.end,
+    this.x = 0.5,
+    this.y = 0.5,
+    this.scale = 1.0,
+  });
+
+  final String id;
+
+  /// File path on mobile, blob URL on web.
+  final String path;
+  final String name;
+  final Duration start;
+  final Duration end;
+  final double x;
+  final double y;
+  final double scale;
+
+  StickerOverlay copyWith({
+    Duration? start,
+    Duration? end,
+    double? x,
+    double? y,
+    double? scale,
+  }) =>
+      StickerOverlay(
+        id: id,
+        path: path,
+        name: name,
+        start: start ?? this.start,
+        end: end ?? this.end,
+        x: x ?? this.x,
+        y: y ?? this.y,
+        scale: scale ?? this.scale,
+      );
+}
+
 /// The editable document: tracks of clips plus overlays.
 class TimelineProject {
   const TimelineProject({
     this.tracks = const [],
     this.overlays = const [],
+    this.audioTracks = const [],
+    this.stickers = const [],
   });
 
   final List<VideoTrack> tracks;
   final List<TextOverlay> overlays;
+  final List<AudioTrack> audioTracks;
+  final List<StickerOverlay> stickers;
 
   /// Total duration = end of the last clip on any track.
   Duration get duration {

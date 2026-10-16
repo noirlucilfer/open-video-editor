@@ -2,13 +2,18 @@
 //
 // Plays the clip under the playhead with package:video_player and advances
 // across contiguous clips, keeping the timeline playhead in sync.
+// Per-clip speed is applied via VideoPlayerController.setPlaybackSpeed and
+// the playhead math accounts for it. Background audio tracks play through
+// package:audioplayers, offset to the playhead position.
 // This is the preview path for milestone 2; the native [VideoEngine]
 // (FFmpeg) remains the path for export rendering.
 
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 import 'package:video_player/video_player.dart' hide VideoTrack;
 
 import '../engine/video_engine.dart';
+import 'audio_source.dart';
 import 'player_controller_factory.dart';
 
 /// Clamp [value] into [min]..[max] (Duration has no clamp method).
@@ -25,6 +30,9 @@ class TimelinePlayer extends ChangeNotifier {
   bool _playing = false;
   bool _disposed = false;
 
+  /// Background audio players keyed by track id.
+  final Map<String, AudioPlayer> _audioPlayers = {};
+
   Duration get position => _position;
   bool get playing => _playing;
   VideoPlayerController? get controller => _controller;
@@ -37,7 +45,84 @@ class TimelinePlayer extends ChangeNotifier {
     if (_position > _project.duration) {
       _position = _project.duration;
     }
+    await _syncAudioTracks();
     await _refreshActiveClip();
+  }
+
+  /// Rebuilds background audio players to match the project's tracks.
+  Future<void> _syncAudioTracks() async {
+    final wanted = {for (final t in _project.audioTracks) t.id};
+    for (final id in _audioPlayers.keys.toList()) {
+      if (!wanted.contains(id)) {
+        await _audioPlayers.remove(id)?.dispose();
+      }
+    }
+    for (final track in _project.audioTracks) {
+      if (_audioPlayers.containsKey(track.id)) continue;
+      final player = AudioPlayer();
+      try {
+        await player.setSource(audioSourceForPath(track.path));
+        await player.setVolume(track.volume);
+      } catch (e) {
+        debugPrint('audio preview source failed: $e');
+        await player.dispose();
+        continue;
+      }
+      if (_disposed) {
+        await player.dispose();
+        return;
+      }
+      _audioPlayers[track.id] = player;
+    }
+    if (_playing) await _startAudio(_position);
+  }
+
+  /// Offset inside the audio file for timeline position [pos].
+  Duration _audioOffset(AudioTrack track, Duration pos) =>
+      track.trimStart + (pos - track.timelineStart);
+
+  bool _audioAudible(AudioTrack track, Duration pos) =>
+      pos >= track.timelineStart && pos < track.timelineEnd;
+
+  Future<void> _startAudio(Duration pos) async {
+    for (final track in _project.audioTracks) {
+      final player = _audioPlayers[track.id];
+      if (player == null) continue;
+      if (_audioAudible(track, pos)) {
+        try {
+          await player.seek(_audioOffset(track, pos));
+          await player.setVolume(track.volume);
+          await player.resume();
+        } catch (e) {
+          debugPrint('audio preview play failed: $e');
+        }
+      } else {
+        await player.pause();
+      }
+    }
+  }
+
+  Future<void> _pauseAudio() async {
+    for (final player in _audioPlayers.values) {
+      await player.pause();
+    }
+  }
+
+  Future<void> _seekAudio(Duration pos) async {
+    for (final track in _project.audioTracks) {
+      final player = _audioPlayers[track.id];
+      if (player == null) continue;
+      if (_audioAudible(track, pos)) {
+        try {
+          await player.seek(_audioOffset(track, pos));
+          if (_playing) await player.resume();
+        } catch (e) {
+          debugPrint('audio preview seek failed: $e');
+        }
+      } else {
+        await player.pause();
+      }
+    }
   }
 
   /// First video track's clip containing [position], or null.
@@ -60,7 +145,8 @@ class TimelinePlayer extends ChangeNotifier {
     if (clip?.id == cur?.id &&
         clip?.timelineStart == cur?.timelineStart &&
         clip?.duration == cur?.duration &&
-        clip?.sourceStart == cur?.sourceStart) {
+        clip?.sourceStart == cur?.sourceStart &&
+        clip?.speed == cur?.speed) {
       return;
     }
     await _swapController(clip);
@@ -86,6 +172,7 @@ class TimelinePlayer extends ChangeNotifier {
         return;
       }
       if (_disposed) return;
+      await c.setPlaybackSpeed(clip.speed);
       await c.seekTo(_offsetInClip(clip, _position));
       if (_playing) await c.play();
     }
@@ -93,16 +180,23 @@ class TimelinePlayer extends ChangeNotifier {
   }
 
   Duration _offsetInClip(Clip clip, Duration timelinePos) {
-    final offset = timelinePos - clip.timelineStart + clip.sourceStart;
-    return _clampDuration(offset, clip.sourceStart, clip.sourceStart + clip.duration);
+    final mediaOffset = Duration(
+        milliseconds:
+            ((timelinePos - clip.timelineStart).inMilliseconds * clip.speed)
+                .round());
+    final offset = clip.sourceStart + mediaOffset;
+    return _clampDuration(
+        offset, clip.sourceStart, clip.sourceStart + clip.sourceDuration);
   }
 
   void _onTick() {
     final c = _controller;
     final clip = _activeClip;
     if (c == null || clip == null || !c.value.isInitialized) return;
-    final timelinePos =
-        clip.timelineStart + (c.value.position - clip.sourceStart);
+    // Controller position is media time; divide by speed for timeline time.
+    final mediaMs = (c.value.position - clip.sourceStart).inMilliseconds;
+    final timelinePos = clip.timelineStart +
+        Duration(milliseconds: (mediaMs / clip.speed).round());
     if (timelinePos >= clip.timelineEnd) {
       _advancePast(clip);
       return;
@@ -129,12 +223,14 @@ class TimelinePlayer extends ChangeNotifier {
     _playing = true;
     await _refreshActiveClip();
     await _controller?.play();
+    await _startAudio(_position);
     notifyListeners();
   }
 
   Future<void> pause() async {
     _playing = false;
     await _controller?.pause();
+    await _pauseAudio();
     notifyListeners();
   }
 
@@ -146,6 +242,7 @@ class TimelinePlayer extends ChangeNotifier {
     if (clip != null && c != null && c.value.isInitialized) {
       await c.seekTo(_offsetInClip(clip, _position));
     }
+    await _seekAudio(_position);
     notifyListeners();
   }
 
@@ -155,6 +252,10 @@ class TimelinePlayer extends ChangeNotifier {
     _controller?.removeListener(_onTick);
     _controller?.dispose();
     _controller = null;
+    for (final player in _audioPlayers.values) {
+      player.dispose();
+    }
+    _audioPlayers.clear();
     super.dispose();
   }
 }
