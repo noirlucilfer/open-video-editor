@@ -1,6 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application
-        android:label="open_video_editor"
+        android:label="Open Video Editor"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

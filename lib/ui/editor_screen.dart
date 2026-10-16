@@ -559,6 +559,9 @@ class _EditorScreenState extends State<EditorScreen> {
 
   Future<void> _onStickerTap(StickerOverlay sticker) async {
     var scale = sticker.scale;
+    final keyframes = [...sticker.keyframes]
+      ..sort((a, b) => a.time.compareTo(b.time));
+    String fmt(Duration d) => '${(d.inMilliseconds / 1000).toStringAsFixed(1)}s';
     final action = await showDialog<String>(
       context: context,
       builder: (ctx) => StatefulBuilder(
@@ -583,6 +586,53 @@ class _EditorScreenState extends State<EditorScreen> {
                     ),
                   ),
                 ],
+              ),
+              if (keyframes.isNotEmpty)
+                Wrap(
+                  spacing: 6,
+                  children: [
+                    for (var i = 0; i < keyframes.length; i++)
+                      InputChip(
+                        label: Text(fmt(keyframes[i].time)),
+                        deleteIcon: const Icon(Icons.close, size: 16),
+                        onDeleted: () =>
+                            setDialogState(() => keyframes.removeAt(i)),
+                        onPressed: () => Navigator.pop(ctx, 'goto:$i'),
+                      ),
+                  ],
+                ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  TextButton.icon(
+                    icon: const Icon(Icons.add),
+                    label: const Text('Keyframe di playhead'),
+                    onPressed: () {
+                      final offset = _player.position - sticker.start;
+                      if (offset < Duration.zero ||
+                          offset > sticker.end - sticker.start) {
+                        return;
+                      }
+                      setDialogState(() {
+                        keyframes.removeWhere((k) =>
+                            (k.time - offset).inMilliseconds.abs() < 150);
+                        keyframes.add(StickerKeyframe(
+                          time: offset,
+                          x: sticker.x,
+                          y: sticker.y,
+                          scale: scale,
+                        ));
+                        keyframes.sort(
+                            (a, b) => a.time.compareTo(b.time));
+                      });
+                    },
+                  ),
+                ],
+              ),
+              const Text(
+                'Ketuk keyframe lalu geser stiker di preview untuk mengubahnya.',
+                style: TextStyle(fontSize: 11, color: Colors.grey),
+                textAlign: TextAlign.center,
               ),
               TextButton.icon(
                 icon: const Icon(Icons.delete_outline, color: Colors.red),
@@ -612,21 +662,55 @@ class _EditorScreenState extends State<EditorScreen> {
     } else if (action == 'save') {
       await _updateProject(_with(
           stickers: _project.stickers
-              .map((s) => s.id == sticker.id ? s.copyWith(scale: scale) : s)
+              .map((s) => s.id == sticker.id
+                  ? s.copyWith(scale: scale, keyframes: keyframes)
+                  : s)
               .toList()));
+    } else if (action != null && action.startsWith('goto:')) {
+      // Save first (indices refer to the edited list), then jump the
+      // playhead to the keyframe so dragging edits it.
+      final i = int.parse(action.substring(5));
+      await _updateProject(_with(
+          stickers: _project.stickers
+              .map((s) => s.id == sticker.id
+                  ? s.copyWith(scale: scale, keyframes: keyframes)
+                  : s)
+              .toList()));
+      final saved = _project.stickers.firstWhere((s) => s.id == sticker.id);
+      final kfs = [...saved.keyframes]
+        ..sort((a, b) => a.time.compareTo(b.time));
+      if (i >= 0 && i < kfs.length) {
+        await _player.seek(saved.start + kfs[i].time);
+      }
     }
   }
 
   /// Moves a sticker by a fractional delta of the video frame.
+  /// When the playhead sits within 150ms of a keyframe, the drag adjusts
+  /// that keyframe; otherwise it moves the base pose (t=0).
   Future<void> _moveSticker(String id, double dx, double dy) async {
-    final stickers = _project.stickers
-        .map((s) => s.id == id
-            ? s.copyWith(
-                x: (s.x + dx).clamp(0.0, 1.0),
-                y: (s.y + dy).clamp(0.0, 1.0),
-              )
-            : s)
-        .toList();
+    final pos = _player.position;
+    final stickers = _project.stickers.map((s) {
+      if (s.id != id) return s;
+      final offset = pos - s.start;
+      final ki = s.keyframes.indexWhere((k) =>
+          (k.time - offset).inMilliseconds.abs() < 150);
+      if (ki >= 0) {
+        final kfs = [...s.keyframes];
+        final k = kfs[ki];
+        kfs[ki] = StickerKeyframe(
+          time: k.time,
+          x: (k.x + dx).clamp(0.0, 1.0),
+          y: (k.y + dy).clamp(0.0, 1.0),
+          scale: k.scale,
+        );
+        return s.copyWith(keyframes: kfs);
+      }
+      return s.copyWith(
+        x: (s.x + dx).clamp(0.0, 1.0),
+        y: (s.y + dy).clamp(0.0, 1.0),
+      );
+    }).toList();
     _project = _with(stickers: stickers);
     // Lightweight update: don't rebuild audio players while dragging.
     setState(() {});
@@ -860,14 +944,22 @@ class _EditorScreenState extends State<EditorScreen> {
                 ),
               ),
             for (final s in _activeStickers())
-              _DraggableSticker(
-                sticker: s,
-                videoLeft: left,
-                videoTop: top,
-                videoWidth: vw,
-                videoHeight: vh,
-                onMove: (dx, dy) => _moveSticker(s.id, dx / vw, dy / vh),
-              ),
+              Builder(builder: (context) {
+                // Animated pose at the playhead; dragging near a keyframe
+                // edits that keyframe (see _moveSticker).
+                final pose = stickerPoseAt(s, _player.position - s.start);
+                final eff = s.keyframes.isEmpty
+                    ? s
+                    : s.copyWith(x: pose.x, y: pose.y, scale: pose.scale);
+                return _DraggableSticker(
+                  sticker: eff,
+                  videoLeft: left,
+                  videoTop: top,
+                  videoWidth: vw,
+                  videoHeight: vh,
+                  onMove: (dx, dy) => _moveSticker(s.id, dx / vw, dy / vh),
+                );
+              }),
           ],
         );
       },

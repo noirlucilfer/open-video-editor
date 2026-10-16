@@ -316,6 +316,22 @@ class AudioTrack {
 ///
 /// [x] and [y] are the normalized (0..1) center position on the frame;
 /// [scale] multiplies the base size (25% of the frame width).
+/// A pose snapshot for a sticker animation: normalized center (x, y)
+/// and scale at [time] after the sticker's start.
+class StickerKeyframe {
+  const StickerKeyframe({
+    required this.time,
+    required this.x,
+    required this.y,
+    this.scale = 1.0,
+  });
+
+  final Duration time;
+  final double x;
+  final double y;
+  final double scale;
+}
+
 class StickerOverlay {
   const StickerOverlay({
     required this.id,
@@ -326,6 +342,7 @@ class StickerOverlay {
     this.x = 0.5,
     this.y = 0.5,
     this.scale = 1.0,
+    this.keyframes = const [],
   });
 
   final String id;
@@ -339,12 +356,16 @@ class StickerOverlay {
   final double y;
   final double scale;
 
+  /// Pose snapshots after [start]; empty = static sticker.
+  final List<StickerKeyframe> keyframes;
+
   StickerOverlay copyWith({
     Duration? start,
     Duration? end,
     double? x,
     double? y,
     double? scale,
+    List<StickerKeyframe>? keyframes,
   }) =>
       StickerOverlay(
         id: id,
@@ -355,7 +376,38 @@ class StickerOverlay {
         x: x ?? this.x,
         y: y ?? this.y,
         scale: scale ?? this.scale,
+        keyframes: keyframes ?? this.keyframes,
       );
+}
+
+/// Interpolated sticker pose at [offset] after the sticker's start.
+/// The base x/y/scale is the pose at t=0; keyframes lerp between each
+/// other (and from the base pose to the first keyframe).
+({double x, double y, double scale}) stickerPoseAt(
+    StickerOverlay s, Duration offset) {
+  final kfs = [...s.keyframes]..sort((a, b) => a.time.compareTo(b.time));
+  if (kfs.isEmpty || offset <= Duration.zero) {
+    return (x: s.x, y: s.y, scale: s.scale);
+  }
+  double lerp(double a, double b, double t) => a + (b - a) * t;
+  StickerKeyframe prev =
+      StickerKeyframe(time: Duration.zero, x: s.x, y: s.y, scale: s.scale);
+  for (final kf in kfs) {
+    if (offset <= kf.time) {
+      final span = kf.time.inMilliseconds - prev.time.inMilliseconds;
+      final t = span <= 0
+          ? 1.0
+          : (offset.inMilliseconds - prev.time.inMilliseconds) / span;
+      final c = t.clamp(0.0, 1.0);
+      return (
+        x: lerp(prev.x, kf.x, c),
+        y: lerp(prev.y, kf.y, c),
+        scale: lerp(prev.scale, kf.scale, c),
+      );
+    }
+    prev = kf;
+  }
+  return (x: prev.x, y: prev.y, scale: prev.scale);
 }
 
 /// The editable document: tracks of clips plus overlays.

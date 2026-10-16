@@ -163,16 +163,30 @@ List<String> buildExportCommand(
   }
   for (var k = 0; k < project.stickers.length; k++) {
     final sticker = project.stickers[k];
-    final w = (config.width * 0.25 * sticker.scale).round().clamp(8, 4096);
-    filters.add('[${stickerBase + k}:v]scale=$w:-1[st$k]');
     final next = 'sv$k';
-    final start =
-        _mapOutputTime(sticker.start, clips, xfades);
+    final start = _mapOutputTime(sticker.start, clips, xfades);
     final end = _mapOutputTime(sticker.end, clips, xfades);
-    filters.add('[$videoLabel][st$k]'
-        "overlay=x='(${_num(sticker.x)}*W-w/2)':y='(${_num(sticker.y)}*H-h/2)'"
-        ":enable='between(t,${_sec(start)},${_sec(end)})'"
-        '[$next]');
+    if (sticker.keyframes.isEmpty) {
+      final w = (config.width * 0.25 * sticker.scale).round().clamp(8, 4096);
+      filters.add('[${stickerBase + k}:v]scale=$w:-1[st$k]');
+      filters.add('[$videoLabel][st$k]'
+          "overlay=x='(${_num(sticker.x)}*W-w/2)':y='(${_num(sticker.y)}*H-h/2)'"
+          ":enable='between(t,${_sec(start)},${_sec(end)})'"
+          '[$next]');
+    } else {
+      // Animated sticker: piecewise-linear x/y/scale expressions over t.
+      final w0 = (config.width * 0.25).round().clamp(8, 4096);
+      final pts = _keyframePoints(sticker, clips, xfades);
+      final xe = _piecewise(pts.map((p) => (p.t, p.x)).toList());
+      final ye = _piecewise(pts.map((p) => (p.t, p.y)).toList());
+      final se = _piecewise(pts.map((p) => (p.t, p.s)).toList());
+      filters.add('[${stickerBase + k}:v]scale=w=\'$w0*($se)\':h=-1'
+          ':eval=frame[st$k]');
+      filters.add('[$videoLabel][st$k]'
+          "overlay=x='(($xe)*W-w/2)':y='(($ye)*H-h/2)'"
+          ":enable='between(t,${_sec(start)},${_sec(end)})'"
+          ":eval=frame[$next]");
+    }
     videoLabel = next;
   }
   filters.add('[$videoLabel]format=yuv420p[outv]');
@@ -210,6 +224,51 @@ List<String> buildExportCommand(
 
 String _num(double v) =>
     v.toStringAsFixed(3).replaceAll(RegExp(r'\.?0+$'), '');
+
+/// A keyframe point remapped onto the output timeline.
+typedef _KP = ({double t, double x, double y, double s});
+
+/// Base pose plus keyframes as output-timeline points for expression gen.
+List<_KP> _keyframePoints(
+    StickerOverlay sticker, List<Clip> clips, List<Duration> xfades) {
+  final t0 = _mapOutputTime(sticker.start, clips, xfades);
+  final pts = <_KP>[
+    (
+      t: t0.inMilliseconds / 1000,
+      x: sticker.x,
+      y: sticker.y,
+      s: sticker.scale,
+    )
+  ];
+  final kfs = [...sticker.keyframes]..sort((a, b) => a.time.compareTo(b.time));
+  for (final kf in kfs) {
+    final t = _mapOutputTime(sticker.start + kf.time, clips, xfades);
+    pts.add((
+      t: t.inMilliseconds / 1000,
+      x: kf.x,
+      y: kf.y,
+      s: kf.scale,
+    ));
+  }
+  return pts;
+}
+
+/// Piecewise-linear expression of (tSecs, value) points, as nested
+/// if(between(t,...),...) — single-quoted by the caller.
+String _piecewise(List<(double, double)> pts) {
+  var expr = _num(pts.last.$2);
+  for (var i = pts.length - 2; i >= 0; i--) {
+    final t0 = _num(pts[i].$1);
+    final t1 = _num(pts[i + 1].$1);
+    final v0 = _num(pts[i].$2);
+    final v1 = _num(pts[i + 1].$2);
+    final seg = t0 == t1
+        ? v1
+        : '$v0+($v1-$v0)*(t-$t0)/($t1-$t0)';
+    expr = 'if(between(t,$t0,$t1),$seg,$expr)';
+  }
+  return expr;
+}
 
 /// afade in/out for a background music track, clamped to its duration.
 /// Applied before adelay so timings are relative to the track content.

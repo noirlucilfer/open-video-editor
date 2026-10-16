@@ -1,0 +1,40 @@
+name: Release
+
+# Push a tag like v0.1.0 to build a signed-with-debug-keys release APK
+# and attach it to a GitHub Release.
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.7'
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build release APK
+        run: flutter build apk --release
+
+      - name: Rename APK with tag
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          cp build/app/outputs/flutter-apk/app-release.apk \
+             "open-video-editor-${TAG}.apk"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: open-video-editor-*.apk
+          generate_release_notes: true
