@@ -88,6 +88,25 @@ enum TransitionType {
   crossfade,
 }
 
+/// Visual style of a [TransitionType.crossfade] boundary, mapped to
+/// ffmpeg's xfade transition names.
+enum XfadeKind {
+  dissolve('fade', 'Dissolve'),
+  wipeLeft('wipeleft', 'Wipe ←'),
+  wipeRight('wiperight', 'Wipe →'),
+  slideUp('slideup', 'Slide ↑'),
+  slideDown('slidedown', 'Slide ↓'),
+  circleOpen('circleopen', 'Circle');
+
+  const XfadeKind(this.filterName, this.label);
+
+  /// Name passed to `xfade=transition=`.
+  final String filterName;
+
+  /// Short label for the UI.
+  final String label;
+}
+
 /// A transition applied at the start ([transitionIn]) or end
 /// ([transitionOut]) of a clip. Preview renders fades as opacity ramps;
 /// the FFmpeg export path will translate them into filter graphs.
@@ -95,17 +114,26 @@ class ClipTransition {
   const ClipTransition({
     this.type = TransitionType.none,
     this.duration = Duration.zero,
+    this.xfadeKind = XfadeKind.dissolve,
   });
 
   final TransitionType type;
   final Duration duration;
 
+  /// Only meaningful when [type] is [TransitionType.crossfade].
+  final XfadeKind xfadeKind;
+
   bool get isEnabled => type != TransitionType.none && duration > Duration.zero;
 
-  ClipTransition copyWith({TransitionType? type, Duration? duration}) =>
+  ClipTransition copyWith({
+    TransitionType? type,
+    Duration? duration,
+    XfadeKind? xfadeKind,
+  }) =>
       ClipTransition(
         type: type ?? this.type,
         duration: duration ?? this.duration,
+        xfadeKind: xfadeKind ?? this.xfadeKind,
       );
 }
 

@@ -405,6 +405,30 @@ void main() {
       expect(fc, contains('adelay=3000|3000'));
     });
 
+    test('crossfade kind maps to the xfade transition name', () {
+      final c1 = _clip('c1', '/tmp/a.mp4', Duration.zero,
+          const Duration(seconds: 4));
+      final c2 = _clip('c2', '/tmp/b.mp4', const Duration(seconds: 4),
+          const Duration(seconds: 4));
+      final withWipe = c1.copyWith(
+        transitionOut: const ClipTransition(
+            type: TransitionType.crossfade,
+            duration: Duration(seconds: 1),
+            xfadeKind: XfadeKind.wipeLeft),
+      );
+      final args = buildExportCommand(
+        _project(clips: [withWipe, c2]),
+        _config('/tmp/o.mp4'),
+      );
+      final fc = args[args.indexOf('-filter_complex') + 1];
+      expect(
+          fc,
+          contains(
+              '[v0][v1]xfade=transition=wipeleft:duration=1.0:offset=3.0[x1]'));
+      // audio still uses a plain crossfade
+      expect(fc, contains('[a0][a1]acrossfade=d=1.0[xa1]'));
+    });
+
     test('crossfade longer than a clip is clamped', () {
       final c1 = _clip('c1', '/tmp/a.mp4', Duration.zero,
           const Duration(seconds: 4));

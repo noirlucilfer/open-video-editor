@@ -30,6 +30,15 @@ class TimelinePlayer extends ChangeNotifier {
   bool _playing = false;
   bool _disposed = false;
 
+  /// Incoming clip's controller while a crossfade window is active.
+  /// Initialized just before the window so the dissolve starts on time;
+  /// adopted as [_controller] when the boundary is crossed.
+  VideoPlayerController? _nextController;
+  Clip? _nextClip;
+
+  /// 0..1 while the playhead is inside a crossfade window, -1 otherwise.
+  double _transitionProgress = -1;
+
   /// Background audio players keyed by track id.
   final Map<String, AudioPlayer> _audioPlayers = {};
 
@@ -39,6 +48,15 @@ class TimelinePlayer extends ChangeNotifier {
 
   /// The clip currently under the playhead (null in gaps).
   Clip? get activeClip => _activeClip;
+
+  /// The incoming clip's controller during a crossfade window, else null.
+  VideoPlayerController? get nextController => _nextController;
+
+  /// The incoming clip during a crossfade window, else null.
+  Clip? get nextClip => _nextClip;
+
+  /// Dissolve progress 0..1 inside a crossfade window, -1 outside it.
+  double get transitionProgress => _transitionProgress;
 
   Future<void> setProject(TimelineProject project) async {
     _project = project;
@@ -156,6 +174,7 @@ class TimelinePlayer extends ChangeNotifier {
     final old = _controller;
     _controller = null;
     _activeClip = clip;
+    await _clearTransition();
     if (old != null) {
       old.removeListener(_onTick);
       await old.pause();
@@ -177,6 +196,62 @@ class TimelinePlayer extends ChangeNotifier {
       if (_playing) await c.play();
     }
     notifyListeners();
+  }
+
+  /// Drops any in-progress crossfade preview state.
+  Future<void> _clearTransition() async {
+    _transitionProgress = -1;
+    final n = _nextController;
+    _nextController = null;
+    _nextClip = null;
+    if (n != null) {
+      await n.pause();
+      await n.dispose();
+    }
+  }
+
+  /// The (next clip, effective crossfade duration) when [clip] dissolves
+  /// into its successor, or null. Mirrors the export's contiguity rule.
+  (Clip, Duration)? _crossfadeInto(Clip clip) {
+    final t = clip.transitionOut;
+    if (t.type != TransitionType.crossfade || t.duration <= Duration.zero) {
+      return null;
+    }
+    if (_project.tracks.isEmpty) return null;
+    final clips = _project.tracks.first.clips;
+    final i = clips.indexWhere((c) => c.id == clip.id);
+    if (i < 0 || i + 1 >= clips.length) return null;
+    final next = clips[i + 1];
+    if (next.timelineStart != clip.timelineEnd) return null;
+    var d = t.duration;
+    if (d > clip.duration) d = clip.duration;
+    if (d > next.duration) d = next.duration;
+    return (next, d);
+  }
+
+  /// Pre-initializes the incoming clip's controller shortly before its
+  /// crossfade window so the dissolve can start on time.
+  Future<void> _ensureTransitionController(
+      Clip next, Duration windowStart) async {
+    if (_nextClip?.id == next.id && _nextController != null) return;
+    await _clearTransition();
+    if (_disposed) return;
+    final c = createPlayerController(next.source.path);
+    _nextController = c;
+    _nextClip = next;
+    try {
+      await c.initialize();
+    } catch (e) {
+      debugPrint('transition preview init failed: $e');
+      await _clearTransition();
+      return;
+    }
+    if (_disposed || _nextController != c) {
+      await c.dispose();
+      return;
+    }
+    await c.setPlaybackSpeed(next.speed);
+    await c.seekTo(next.sourceStart);
   }
 
   Duration _offsetInClip(Clip clip, Duration timelinePos) {
@@ -202,7 +277,43 @@ class TimelinePlayer extends ChangeNotifier {
       return;
     }
     _position = timelinePos;
+    _updateTransition(clip, timelinePos);
     notifyListeners();
+  }
+
+  /// Drives the crossfade preview: pre-initializes the incoming clip just
+  /// before its window, plays it inside the window, and reports progress.
+  void _updateTransition(Clip clip, Duration timelinePos) {
+    final xf = _crossfadeInto(clip);
+    if (xf == null) {
+      if (_transitionProgress >= 0) {
+        _clearTransition();
+      }
+      return;
+    }
+    final (next, d) = xf;
+    final windowStart = clip.timelineEnd - d;
+    if (timelinePos < windowStart - const Duration(milliseconds: 750)) {
+      if (_transitionProgress >= 0) _clearTransition();
+      return;
+    }
+    // ignore: discarded_futures
+    _ensureTransitionController(next, windowStart);
+    if (timelinePos >= windowStart) {
+      final n = _nextController;
+      if (n != null &&
+          n.value.isInitialized &&
+          !n.value.isPlaying &&
+          _playing) {
+        // ignore: discarded_futures
+        n.play();
+      }
+      final elapsed = timelinePos - windowStart;
+      _transitionProgress =
+          (elapsed.inMilliseconds / d.inMilliseconds).clamp(0.0, 1.0);
+    } else if (_transitionProgress >= 0) {
+      _transitionProgress = -1;
+    }
   }
 
   Future<void> _advancePast(Clip clip) async {
@@ -211,6 +322,28 @@ class TimelinePlayer extends ChangeNotifier {
       await pause();
       return;
     }
+    // Seamless handoff: the incoming clip's controller is already playing
+    // from inside the crossfade window — adopt it instead of rebuilding.
+    final n = _nextController;
+    final next = _nextClip;
+    if (n != null && next != null && n.value.isInitialized) {
+      final old = _controller;
+      _controller = n;
+      _activeClip = next;
+      _nextController = null;
+      _nextClip = null;
+      _transitionProgress = -1;
+      n.addListener(_onTick);
+      if (old != null) {
+        old.removeListener(_onTick);
+        await old.pause();
+        await old.dispose();
+      }
+      if (_playing) await n.play();
+      notifyListeners();
+      return;
+    }
+    await _clearTransition();
     await _refreshActiveClip();
     if (_playing) await _controller?.play();
   }
@@ -230,12 +363,16 @@ class TimelinePlayer extends ChangeNotifier {
   Future<void> pause() async {
     _playing = false;
     await _controller?.pause();
+    await _nextController?.pause();
     await _pauseAudio();
     notifyListeners();
   }
 
   Future<void> seek(Duration position) async {
     _position = _clampDuration(position, Duration.zero, _project.duration);
+    // Scrubbing breaks the dissolve illusion; resume with a hard cut and
+    // let _onTick rebuild the transition if playback continues into one.
+    await _clearTransition();
     await _refreshActiveClip();
     final clip = _activeClip;
     final c = _controller;
@@ -252,6 +389,9 @@ class TimelinePlayer extends ChangeNotifier {
     _controller?.removeListener(_onTick);
     _controller?.dispose();
     _controller = null;
+    _nextController?.dispose();
+    _nextController = null;
+    _nextClip = null;
     for (final player in _audioPlayers.values) {
       player.dispose();
     }

@@ -738,24 +738,47 @@ class _EditorScreenState extends State<EditorScreen> {
         .toList();
   }
 
+  /// The video widget for a controller, with the clip's color filter.
+  Widget _filteredVideo(VideoPlayerController controller, Clip? clip) {
+    Widget video = AspectRatio(
+      aspectRatio: controller.value.aspectRatio,
+      child: VideoPlayer(controller),
+    );
+    if (clip != null && clip.filter != VideoFilter.none) {
+      video = ColorFiltered(
+        colorFilter: ColorFilter.matrix(clip.filter.matrix),
+        child: video,
+      );
+    }
+    return video;
+  }
+
   Widget _buildPreview() {
     final controller = _player.controller;
     final clip = _player.activeClip;
     Widget? video;
     if (controller != null && controller.value.isInitialized) {
-      video = AspectRatio(
-        aspectRatio: controller.value.aspectRatio,
-        child: VideoPlayer(controller),
-      );
-      if (clip != null && clip.filter != VideoFilter.none) {
-        video = ColorFiltered(
-          colorFilter: ColorFilter.matrix(clip.filter.matrix),
-          child: video,
-        );
-      }
+      video = _filteredVideo(controller, clip);
       final opacity = _fadeOpacity(clip);
       if (opacity < 1.0) {
         video = Opacity(opacity: opacity, child: video);
+      }
+      // True crossfade preview: the incoming clip dissolves in over the
+      // outgoing one. (Wipe/slide kinds preview as a dissolve; export
+      // renders the real effect.)
+      final progress = _player.transitionProgress;
+      final next = _player.nextController;
+      final nextClip = _player.nextClip;
+      if (progress >= 0 && next != null && next.value.isInitialized) {
+        video = Stack(
+          children: [
+            video,
+            Opacity(
+              opacity: progress.clamp(0.0, 1.0),
+              child: _filteredVideo(next, nextClip),
+            ),
+          ],
+        );
       }
     }
     return LayoutBuilder(
@@ -881,27 +904,48 @@ class _EditorScreenState extends State<EditorScreen> {
     return Container(
       color: Colors.grey.shade900,
       padding: const EdgeInsets.only(bottom: 4),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          FilterChip(
-            label: const Text('Fade in'),
-            selected: clip.transitionIn.isEnabled,
-            onSelected: (_) => _toggleFade(true),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              FilterChip(
+                label: const Text('Fade in'),
+                selected: clip.transitionIn.isEnabled,
+                onSelected: (_) => _toggleFade(true),
+              ),
+              const SizedBox(width: 8),
+              FilterChip(
+                label: const Text('Fade out'),
+                selected: clip.transitionOut.isEnabled &&
+                    clip.transitionOut.type == TransitionType.fade,
+                onSelected: (_) => _toggleFade(false),
+              ),
+              const SizedBox(width: 8),
+              FilterChip(
+                label: const Text('Crossfade'),
+                selected: crossfadeOut,
+                onSelected: _canCrossfade ? (_) => _toggleCrossfade() : null,
+              ),
+            ],
           ),
-          const SizedBox(width: 8),
-          FilterChip(
-            label: const Text('Fade out'),
-            selected: clip.transitionOut.isEnabled &&
-                clip.transitionOut.type == TransitionType.fade,
-            onSelected: (_) => _toggleFade(false),
-          ),
-          const SizedBox(width: 8),
-          FilterChip(
-            label: const Text('Crossfade'),
-            selected: crossfadeOut,
-            onSelected: _canCrossfade ? (_) => _toggleCrossfade() : null,
-          ),
+          if (crossfadeOut)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 6,
+                children: [
+                  for (final kind in XfadeKind.values)
+                    ChoiceChip(
+                      label: Text(kind.label),
+                      selected: clip.transitionOut.xfadeKind == kind,
+                      onSelected: (_) => _setXfadeKind(kind),
+                    ),
+                ],
+              ),
+            ),
         ],
       ),
     );
@@ -934,6 +978,21 @@ class _EditorScreenState extends State<EditorScreen> {
                 type: TransitionType.crossfade,
                 duration: Duration(seconds: 1),
               ),
+      ),
+    );
+  }
+
+  /// Changes the visual style of the selected clip's crossfade.
+  Future<void> _setXfadeKind(XfadeKind kind) async {
+    final found = _selectedClipId == null ? null : _findClip(_selectedClipId!);
+    if (found == null) return;
+    final (ti, ci, clip) = found;
+    if (clip.transitionOut.type != TransitionType.crossfade) return;
+    await _replaceClip(
+      ti,
+      ci,
+      clip.copyWith(
+        transitionOut: clip.transitionOut.copyWith(xfadeKind: kind),
       ),
     );
   }

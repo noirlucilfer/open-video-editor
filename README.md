@@ -4,6 +4,11 @@ An open-source video editor inspired by CapCut — built from scratch with
 100% original code (MIT licensed). One Flutter codebase targeting Android,
 iOS, and Web, with real FFmpeg-powered export on every platform.
 
+<video src="demo/demo.mp4" width="640" controls></video>
+
+> Demo reel rendered by the app's own export engine: three clips joined
+> with `wipeleft` and `slideup` xfade transitions plus a text overlay.
+
 > **Legal note:** this project is inspired by CapCut's *features*, not its
 > code. No proprietary code, assets, or resources from ByteDance are used
 > here. Clean-room reimplementation only.
@@ -20,7 +25,9 @@ iOS, and Web, with real FFmpeg-powered export on every platform.
 - **Background music** — audio tracks with trim handles, volume control,
   mixed at export
 - **Stickers** — image overlays, draggable in preview, scaled at export
-- **Transitions** — fade in/out per clip, crossfade between clips
+- **Transitions** — fade in/out per clip; crossfade between clips in 6
+  styles (dissolve, wipe ←/→, slide ↑/↓, circle) with a live dissolve
+  preview and xfade/acrossfade export
 - **Real MP4 export** — a pure-Dart builder translates the timeline into
   an FFmpeg filter graph (trim/concat, filters, speed, fades, xfade,
   drawtext, audio mix, sticker overlays) → H.264 + AAC

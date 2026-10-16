@@ -115,7 +115,7 @@ List<String> buildExportCommand(
   final xfades = _xfadeDurations(clips);
   final hasXfade = xfades.any((d) => d > Duration.zero);
   if (hasXfade) {
-    _xfadeChains(filters, clips, xfades);
+    _xfadeChains(filters, clips, xfades, _xfadeKinds(clips));
   } else {
     final maps =
         [for (var i = 0; i < clips.length; i++) '[v$i][a$i]'].join();
@@ -230,8 +230,21 @@ List<Duration> _xfadeDurations(List<Clip> clips) {
   return durs;
 }
 
-/// Total output duration: crossfades overlap, so each one shortens the
-/// result by its duration.
+/// Crossfade style at each clip boundary (null when the boundary has no
+/// crossfade). Mirrors [_xfadeDurations].
+List<XfadeKind?> _xfadeKinds(List<Clip> clips) {
+  final kinds = List<XfadeKind?>.filled(
+      clips.isNotEmpty ? clips.length - 1 : 0, null);
+  for (var i = 0; i + 1 < clips.length; i++) {
+    final t = clips[i].transitionOut;
+    if (t.type == TransitionType.crossfade &&
+        t.duration > Duration.zero &&
+        clips[i].timelineEnd == clips[i + 1].timelineStart) {
+      kinds[i] = t.xfadeKind;
+    }
+  }
+  return kinds;
+}
 Duration exportDuration(TimelineProject project) {
   final clips = [
     for (final track in project.tracks) for (final clip in track.clips) clip
@@ -260,8 +273,8 @@ Duration _mapOutputTime(
 /// Builds the video/audio join chains when at least one boundary has a
 /// crossfade. Boundaries dissolve with xfade/acrossfade; plain boundaries
 /// use two-input concats. Produces [catv] and [cata] like the concat path.
-void _xfadeChains(
-    List<String> filters, List<Clip> clips, List<Duration> xfades) {
+void _xfadeChains(List<String> filters, List<Clip> clips,
+    List<Duration> xfades, List<XfadeKind?> kinds) {
   var vAcc = 'v0';
   var aAcc = 'a0';
   var accDurMs = clips[0].duration.inMilliseconds;
@@ -272,10 +285,11 @@ void _xfadeChains(
     if (dMs > 0) {
       final d = _sec(xfades[i]);
       final offset = _sec(Duration(milliseconds: accDurMs - dMs));
+      final kind = kinds[i]?.filterName ?? 'fade';
       final xv = 'x${i + 1}';
       final xa = 'xa${i + 1}';
       filters.add(
-          '[$vAcc][$nextV]xfade=transition=fade:duration=$d:offset=$offset[$xv]');
+          '[$vAcc][$nextV]xfade=transition=$kind:duration=$d:offset=$offset[$xv]');
       filters.add('[$aAcc][$nextA]acrossfade=d=$d[$xa]');
       vAcc = xv;
       aAcc = xa;
