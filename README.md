@@ -4,7 +4,7 @@ An open-source video editor inspired by CapCut — built from scratch with
 100% original code (MIT licensed). One Flutter codebase targeting Android,
 iOS, and Web, with real FFmpeg-powered export on every platform.
 
-<video src="demo/demo.mp4" width="640" controls></video>
+<a href="demo/demo.mp4"><img src="demo/demo.gif" width="480" alt="Demo reel"></a>
 
 > Demo reel rendered by the app's own export engine: three clips joined
 > with `wipeleft` and `slideup` xfade transitions plus a text overlay.
