@@ -211,4 +211,29 @@ void main() {
       expect(createDefaultRunner(), isA<ProcessFFmpegRunner>());
     });
   });
+
+  group('splitWasmArgs', () {
+    test('rewrites -i urls to MEMFS names and strips output dir', () {
+      final r = splitWasmArgs([
+        '-ss', '2.0', '-t', '4.0', '-i', 'blob:http://x/abc',
+        '-ss', '1.0', '-t', '3.0', '-i', 'blob:http://x/def',
+        '-filter_complex', '[0:v]copy[v0]',
+        '-y', '/tmp/ove_export_1.mp4',
+      ]);
+      expect(r.inputs, [
+        {'name': 'ove-in-0.mp4', 'url': 'blob:http://x/abc'},
+        {'name': 'ove-in-1.mp4', 'url': 'blob:http://x/def'},
+      ]);
+      expect(r.outputName, 'ove_export_1.mp4');
+      expect(
+        r.args,
+        [
+          '-ss', '2.0', '-t', '4.0', '-i', 'ove-in-0.mp4',
+          '-ss', '1.0', '-t', '3.0', '-i', 'ove-in-1.mp4',
+          '-filter_complex', '[0:v]copy[v0]',
+          '-y', 'ove_export_1.mp4',
+        ],
+      );
+    });
+  });
 }

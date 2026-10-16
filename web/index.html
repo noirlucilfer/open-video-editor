@@ -42,5 +42,7 @@
     * https://docs.flutter.dev/platform-integration/web/initialization
   -->
   <script src="flutter_bootstrap.js" async></script>
+  <!-- ffmpeg.wasm bridge for web export (loaded lazily on first export) -->
+  <script type="module" src="ffmpeg_wasm.js"></script>
 </body>
 </html>

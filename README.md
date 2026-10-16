@@ -41,7 +41,9 @@ The web target will swap in an ffmpeg.wasm engine behind the same interface.
 - [x] Milestone 5: export to MP4 via FFmpeg filter graph (verified
   end-to-end with real ffmpeg: trim/concat, per-clip filters, fades,
   drawtext overlays -> 1080x1920 h264+aac; progress dialog in UI)
-- [ ] Milestone 6: web target via ffmpeg.wasm
+- [x] Milestone 6: web target via ffmpeg.wasm (single-threaded core,
+  no COOP/COEP needed; JS bridge + Dart runner; core verified with the
+  real filter chain in Node: trim/concat/filters/drawtext -> h264+aac)
 
 ## Developing
 

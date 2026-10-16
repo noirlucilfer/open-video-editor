@@ -39,16 +39,25 @@ class _EditorScreenState extends State<EditorScreen> {
   late final VideoEngine _engine;
   late final TimelinePlayer _player;
   final MediaPicker _picker = MediaPicker();
-  TimelineProject _project = const TimelineProject();  String? _selectedClipId;
+  TimelineProject _project = const TimelineProject();
+  String? _selectedClipId;
   bool _adding = false;
+  final _exportProgress = ValueNotifier<double>(0);
+
+  /// True while ffmpeg.wasm downloads its core on web (first export).
+  final _wasmLoading = ValueNotifier<bool>(false);
 
   @override
   void initState() {
     super.initState();
     _engine = widget.engine ??
         FfmpegVideoEngine(
-          // Bundled font for drawtext on mobile; web export is disabled.
-          fontFileProvider: kIsWeb ? null : ensureExportFont,
+          // MEMFS font name on web (materialized by the wasm runner);
+          // bundled TTF copied to a temp file on mobile.
+          fontFileProvider:
+              kIsWeb ? () async => 'ove-font.ttf' : ensureExportFont,
+          onWasmLoadProgress:
+              kIsWeb ? (p) => _wasmLoading.value = p < 1.0 : null,
         );
     _project = widget.initialProject ?? _project;
     _player = TimelinePlayer();
@@ -63,6 +72,8 @@ class _EditorScreenState extends State<EditorScreen> {
     _player.removeListener(_onPlayerChanged);
     _player.dispose();
     _engine.dispose();
+    _exportProgress.dispose();
+    _wasmLoading.dispose();
     super.dispose();
   }
 
@@ -320,15 +331,6 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 
   Future<void> _export() async {
-    if (kIsWeb) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('Export belum didukung di web (butuh ffmpeg)')),
-        );
-      }
-      return;
-    }
     if (_project.tracks.every((t) => t.clips.isEmpty)) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -338,10 +340,20 @@ class _EditorScreenState extends State<EditorScreen> {
       return;
     }
 
-    final dir = await getTemporaryDirectory();
-    final outPath =
-        '${dir.path}/ove_export_${DateTime.now().millisecondsSinceEpoch}.mp4';
-    final progress = ValueNotifier<double>(0);
+    final fileName = 'ove_export_${DateTime.now().millisecondsSinceEpoch}.mp4';
+    // Web has no filesystem: the wasm runner triggers a browser download,
+    // so the "path" is just a filename.
+    final String outPath;
+    if (kIsWeb) {
+      outPath = fileName;
+    } else {
+      final dir = await getTemporaryDirectory();
+      outPath = '${dir.path}/$fileName';
+    }
+    final progress = _exportProgress;
+    final wasmLoading = _wasmLoading;
+    progress.value = 0;
+    wasmLoading.value = false;
     if (!mounted) return;
     // ignore: use_build_context_synchronously
     showDialog(
@@ -349,16 +361,31 @@ class _EditorScreenState extends State<EditorScreen> {
       barrierDismissible: false,
       builder: (_) => AlertDialog(
         title: const Text('Mengekspor video...'),
-        content: ValueListenableBuilder<double>(
-          valueListenable: progress,
-          builder: (_, p, __) => Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              LinearProgressIndicator(value: p),
-              const SizedBox(height: 8),
-              Text('${(p * 100).round()}%'),
-            ],
-          ),
+        content: ValueListenableBuilder<bool>(
+          valueListenable: wasmLoading,
+          builder: (_, loading, __) {
+            if (loading) {
+              return const Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  LinearProgressIndicator(),
+                  SizedBox(height: 8),
+                  Text('Menyiapkan ffmpeg.wasm (unduh sekali saja)...'),
+                ],
+              );
+            }
+            return ValueListenableBuilder<double>(
+              valueListenable: progress,
+              builder: (_, p, __) => Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  LinearProgressIndicator(value: p),
+                  const SizedBox(height: 8),
+                  Text('${(p * 100).round()}%'),
+                ],
+              ),
+            );
+          },
         ),
       ),
     );
@@ -371,7 +398,8 @@ class _EditorScreenState extends State<EditorScreen> {
       if (mounted) {
         Navigator.of(context).pop(); // close progress dialog
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Tersimpan: $outPath')),
+          SnackBar(
+              content: Text(kIsWeb ? 'Video diunduh: $fileName' : 'Tersimpan: $outPath')),
         );
       }
     } catch (e) {
@@ -381,8 +409,6 @@ class _EditorScreenState extends State<EditorScreen> {
           SnackBar(content: Text('Export gagal: $e')),
         );
       }
-    } finally {
-      progress.dispose();
     }
   }
 

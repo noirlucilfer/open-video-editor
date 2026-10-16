@@ -13,16 +13,21 @@ import 'ffmpeg_runner.dart';
 import 'video_engine.dart';
 
 class FfmpegVideoEngine implements VideoEngine {
-  FfmpegVideoEngine({FFmpegRunner? runner, this.fontFile, this.fontFileProvider})
-      : _runner = runner ?? createDefaultRunner();
+  FfmpegVideoEngine({
+    FFmpegRunner? runner,
+    this.fontFile,
+    this.fontFileProvider,
+    void Function(double)? onWasmLoadProgress,
+  }) : _runner = runner ??
+            createDefaultRunner(onWasmLoadProgress: onWasmLoadProgress);
 
   final FFmpegRunner _runner;
 
   /// Typeface used for drawtext overlays, if any.
   final String? fontFile;
 
-  /// Lazy font resolver (e.g. copy a bundled font to a temp file on mobile).
-  /// Used when [fontFile] is null.
+  /// Lazy font resolver (e.g. copy a bundled font to a temp file on mobile,
+  /// or a MEMFS name on web). Used when [fontFile] is null.
   final Future<String?> Function()? fontFileProvider;
 
   final _positionController = StreamController<Duration>.broadcast();

@@ -14,6 +14,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import 'ffmpeg_kit_runner.dart';
+import 'ffmpeg_wasm_runner.dart';
 
 /// Executes ffmpeg. Returns the process exit code (0 = success).
 abstract class FFmpegRunner {
@@ -24,24 +25,37 @@ abstract class FFmpegRunner {
   });
 }
 
-/// Picks the right [FFmpegRunner] for the current platform.
-FFmpegRunner createDefaultRunner() {
-  if (kIsWeb) return const _UnsupportedRunner();
+/// Picks the right [FFmpegRunner] for the current platform:
+/// ffmpeg.wasm in the browser, ffmpeg-kit on mobile, a subprocess
+/// ffmpeg binary on desktop.
+FFmpegRunner createDefaultRunner({void Function(double)? onWasmLoadProgress}) {
+  if (kIsWeb) {
+    return FFmpegWasmRunner(onLoadProgress: onWasmLoadProgress);
+  }
   if (Platform.isAndroid || Platform.isIOS) return FFmpegKitRunner();
   return ProcessFFmpegRunner();
 }
 
-/// Runner that fails fast with a clear error (used on web).
-class _UnsupportedRunner implements FFmpegRunner {
-  const _UnsupportedRunner();
-
-  @override
-  Future<int> run(
-    List<String> args, {
-    Duration? total,
-    void Function(double progress)? onProgress,
-  }) =>
-      throw UnsupportedError('FFmpeg export is not supported on this platform');
+/// Rewrites ffmpeg [args] for the wasm runner: `-i <url>` inputs become
+/// `-i <memfsName>` with descriptors for fetching into MEMFS, and the
+/// output path is reduced to its file name. Pure for testing.
+({List<String> args, List<Map<String, String>> inputs, String outputName})
+    splitWasmArgs(List<String> args) {
+  final inputs = <Map<String, String>>[];
+  final rewritten = <String>[];
+  for (var i = 0; i < args.length; i++) {
+    if (args[i] == '-i' && i + 1 < args.length) {
+      final url = args[++i];
+      final name = 'ove-in-${inputs.length}.mp4';
+      inputs.add({'name': name, 'url': url});
+      rewritten.addAll(['-i', name]);
+    } else {
+      rewritten.add(args[i]);
+    }
+  }
+  final outputName = rewritten.last.split('/').last;
+  rewritten[rewritten.length - 1] = outputName;
+  return (args: rewritten, inputs: inputs, outputName: outputName);
 }
 
 /// Runs a locally installed ffmpeg binary via dart:io.
