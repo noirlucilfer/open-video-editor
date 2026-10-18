@@ -18,13 +18,17 @@ iOS, and Web, with real FFmpeg-powered export on every platform.
 - **Timeline editing** — multi-track timeline with ruler, draggable
   playhead, selectable clips, and draggable trim handles
 - **Trim / split / merge / delete** — pure, unit-tested timeline ops
-- **Text overlays** — add, edit, delete; rendered in preview and export
+- **Text overlays** — add, edit, reposition by dragging; keyframe animation
+  of position and size, rendered in preview and export
 - **Color filters** — 7 per-clip presets (B&W, Sepia, Invert, Warm, Cool,
   Vintage)
+- **Green screen** — per-clip chroma key with key-color picker, sensitivity
+  and edge-softness sliders, composited over a chosen background color
 - **Clip speed** — 0.5x–2x (up to 4x in the engine), timeline resampled
 - **Background music** — audio tracks with trim handles, volume control,
   mixed at export
-- **Stickers** — image overlays, draggable in preview, scaled at export
+- **Stickers** — image overlays, draggable in preview, scaled at export,
+  with keyframe animation of position and scale
 - **Transitions** — fade in/out per clip; crossfade between clips in 6
   styles (dissolve, wipe ←/→, slide ↑/↓, circle) with a live dissolve
   preview and xfade/acrossfade export

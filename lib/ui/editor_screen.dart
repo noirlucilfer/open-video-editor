@@ -322,37 +322,143 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 
   Future<void> _onOverlayTap(TextOverlay overlay) async {
+    final controller = TextEditingController(text: overlay.text);
+    var fontSize = overlay.fontSize;
+    final keyframes = [...overlay.keyframes]
+      ..sort((a, b) => a.time.compareTo(b.time));
+    String fmt(Duration d) => '${(d.inMilliseconds / 1000).toStringAsFixed(1)}s';
     final action = await showDialog<String>(
       context: context,
-      builder: (ctx) => SimpleDialog(
-        title: Text('"$overlay.text"'.length > 24
-            ? '"${overlay.text.substring(0, 24)}..."'
-            : '"${overlay.text}"'),
-        children: [
-          SimpleDialogOption(
-            onPressed: () => Navigator.pop(ctx, 'edit'),
-            child: const Text('Edit'),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: const Text('Teks'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: controller,
+                decoration: const InputDecoration(
+                  labelText: 'Teks',
+                  border: OutlineInputBorder(),
+                ),
+                maxLines: 2,
+              ),
+              Row(
+                children: [
+                  const Text('Ukuran'),
+                  Expanded(
+                    child: Slider(
+                      value: fontSize,
+                      min: 12,
+                      max: 120,
+                      divisions: 27,
+                      label: '${fontSize.round()}',
+                      onChanged: (v) =>
+                          setDialogState(() => fontSize = v),
+                    ),
+                  ),
+                ],
+              ),
+              if (keyframes.isNotEmpty)
+                Wrap(
+                  spacing: 6,
+                  children: [
+                    for (var i = 0; i < keyframes.length; i++)
+                      InputChip(
+                        label: Text(fmt(keyframes[i].time)),
+                        deleteIcon: const Icon(Icons.close, size: 16),
+                        onDeleted: () =>
+                            setDialogState(() => keyframes.removeAt(i)),
+                        onPressed: () => Navigator.pop(ctx, 'goto:$i'),
+                      ),
+                  ],
+                ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  TextButton.icon(
+                    icon: const Icon(Icons.add),
+                    label: const Text('Keyframe di playhead'),
+                    onPressed: () {
+                      final offset = _player.position - overlay.start;
+                      if (offset < Duration.zero ||
+                          offset > overlay.end - overlay.start) {
+                        return;
+                      }
+                      setDialogState(() {
+                        keyframes.removeWhere((k) =>
+                            (k.time - offset).inMilliseconds.abs() < 150);
+                        keyframes.add(TextKeyframe(
+                          time: offset,
+                          x: overlay.x,
+                          y: overlay.y,
+                          fontSize: fontSize,
+                        ));
+                        keyframes.sort(
+                            (a, b) => a.time.compareTo(b.time));
+                      });
+                    },
+                  ),
+                ],
+              ),
+              const Text(
+                'Geser teks di preview untuk memindah posisi.\n'
+                'Ketuk keyframe untuk lompat ke sana, lalu geser\n'
+                'untuk mengubah posisi keyframe itu.',
+                style: TextStyle(fontSize: 11, color: Colors.grey),
+                textAlign: TextAlign.center,
+              ),
+              TextButton.icon(
+                icon: const Icon(Icons.delete_outline, color: Colors.red),
+                label: const Text('Hapus',
+                    style: TextStyle(color: Colors.red)),
+                onPressed: () => Navigator.pop(ctx, 'delete'),
+              ),
+            ],
           ),
-          SimpleDialogOption(
-            onPressed: () => Navigator.pop(ctx, 'delete'),
-            child:
-                const Text('Hapus', style: TextStyle(color: Colors.red)),
-          ),
-        ],
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Batal'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, 'save'),
+              child: const Text('Simpan'),
+            ),
+          ],
+        ),
       ),
     );
+    final newText = controller.text.trim();
+    controller.dispose();
+    TextOverlay savedAs(TextOverlay o) => o.copyWith(
+          text: newText.isEmpty ? o.text : newText,
+          fontSize: fontSize,
+          keyframes: keyframes,
+        );
     if (action == 'delete') {
       await _updateProject(_with(
           overlays:
               _project.overlays.where((o) => o.id != overlay.id).toList()));
-    } else if (action == 'edit') {
-      final text = await _showTextDialog(initial: overlay.text);
-      if (text == null || text.trim().isEmpty) return;
+    } else if (action == 'save') {
       await _updateProject(_with(
           overlays: _project.overlays
-              .map((o) =>
-                  o.id == overlay.id ? o.copyWith(text: text.trim()) : o)
+              .map((o) => o.id == overlay.id ? savedAs(o) : o)
               .toList()));
+    } else if (action != null && action.startsWith('goto:')) {
+      // Save first (indices refer to the edited list), then jump the
+      // playhead to the keyframe so dragging edits it.
+      final i = int.parse(action.substring(5));
+      await _updateProject(_with(
+          overlays: _project.overlays
+              .map((o) => o.id == overlay.id ? savedAs(o) : o)
+              .toList()));
+      final saved = _project.overlays.firstWhere((o) => o.id == overlay.id);
+      final kfs = [...saved.keyframes]
+        ..sort((a, b) => a.time.compareTo(b.time));
+      if (i >= 0 && i < kfs.length) {
+        await _player.seek(saved.start + kfs[i].time);
+      }
     }
   }
 
@@ -685,6 +791,37 @@ class _EditorScreenState extends State<EditorScreen> {
     }
   }
 
+  /// Moves a text overlay by a fractional delta of the video frame.
+  /// When the playhead sits within 150ms of a keyframe, the drag adjusts
+  /// that keyframe; otherwise it moves the base pose (t=0).
+  Future<void> _moveText(String id, double dx, double dy) async {
+    final pos = _player.position;
+    final overlays = _project.overlays.map((o) {
+      if (o.id != id) return o;
+      final offset = pos - o.start;
+      final ki = o.keyframes.indexWhere(
+          (k) => (k.time - offset).inMilliseconds.abs() < 150);
+      if (ki >= 0) {
+        final kfs = [...o.keyframes];
+        final k = kfs[ki];
+        kfs[ki] = TextKeyframe(
+          time: k.time,
+          x: (k.x + dx).clamp(0.0, 1.0),
+          y: (k.y + dy).clamp(0.0, 1.0),
+          fontSize: k.fontSize,
+        );
+        return o.copyWith(keyframes: kfs);
+      }
+      return o.copyWith(
+        x: (o.x + dx).clamp(0.0, 1.0),
+        y: (o.y + dy).clamp(0.0, 1.0),
+      );
+    }).toList();
+    _project = _with(overlays: overlays);
+    // Lightweight update: don't rebuild audio players while dragging.
+    setState(() {});
+  }
+
   /// Moves a sticker by a fractional delta of the video frame.
   /// When the playhead sits within 150ms of a keyframe, the drag adjusts
   /// that keyframe; otherwise it moves the base pose (t=0).
@@ -924,25 +1061,38 @@ class _EditorScreenState extends State<EditorScreen> {
                 ),
               ),
             for (final o in _activeOverlays())
-              Positioned.fill(
-                child: Align(
-                  alignment: Alignment.center,
-                  child: Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: Text(
-                      o.text,
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: o.fontSize,
-                        color: Colors.white,
-                        shadows: const [
-                          Shadow(blurRadius: 8, color: Colors.black87),
-                        ],
+              Builder(builder: (context) {
+                // Animated pose at the playhead; dragging near a keyframe
+                // edits that keyframe (see _moveText).
+                final pose = textPoseAt(o, _player.position - o.start);
+                final cx = left + pose.x * vw;
+                final cy = top + pose.y * vh;
+                return Positioned(
+                  left: cx - vw / 2,
+                  top: cy - 48,
+                  width: vw,
+                  height: 96,
+                  child: GestureDetector(
+                    onPanUpdate: (d) =>
+                        _moveText(o.id, d.delta.dx / vw, d.delta.dy / vh),
+                    onTap: () => _onOverlayTap(o),
+                    child: Align(
+                      alignment: Alignment.center,
+                      child: Text(
+                        o.text,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: pose.fontSize,
+                          color: Colors.white,
+                          shadows: const [
+                            Shadow(blurRadius: 8, color: Colors.black87),
+                          ],
+                        ),
                       ),
                     ),
                   ),
-                ),
-              ),
+                );
+              }),
             for (final s in _activeStickers())
               Builder(builder: (context) {
                 // Animated pose at the playhead; dragging near a keyframe
@@ -991,6 +1141,146 @@ class _EditorScreenState extends State<EditorScreen> {
         ],
       ),
     );
+  }
+
+  Widget _buildChromaRow() {
+    final clip = _selectedClip;
+    if (clip == null) return const SizedBox.shrink();
+    return Container(
+      color: Colors.grey.shade900,
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          FilterChip(
+            label: const Text('Green screen'),
+            selected: clip.chromaKey.enabled,
+            onSelected: (_) => _showChromaDialog(clip),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showChromaDialog(Clip clip) async {
+    var ck = clip.chromaKey;
+    const keyColors = [0x00FF00, 0x0000FF, 0xFF0000, 0xFF00FF];
+    const bgColors = [
+      0x000000,
+      0xFFFFFF,
+      0x0000FF,
+      0xFF0000,
+      0x00FF00,
+      0x1A1A2E,
+    ];
+    Widget swatches(List<int> colors, int selected, ValueChanged<int> onPick) {
+      return Wrap(
+        spacing: 8,
+        children: [
+          for (final c in colors)
+            GestureDetector(
+              onTap: () => onPick(c),
+              child: Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: Color(0xFF000000 | c),
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: c == selected ? Colors.white : Colors.grey.shade700,
+                    width: c == selected ? 3 : 1,
+                  ),
+                ),
+              ),
+            ),
+        ],
+      );
+    }
+
+    final action = await showDialog<String>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: const Text('Green screen'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SwitchListTile(
+                  title: const Text('Aktif'),
+                  value: ck.enabled,
+                  onChanged: (v) =>
+                      setDialogState(() => ck = ck.copyWith(enabled: v)),
+                  contentPadding: EdgeInsets.zero,
+                ),
+                const Text('Warna kunci'),
+                const SizedBox(height: 6),
+                swatches(keyColors, ck.color,
+                    (c) => setDialogState(() => ck = ck.copyWith(color: c))),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    const Text('Sensitivitas'),
+                    Expanded(
+                      child: Slider(
+                        value: ck.similarity,
+                        min: 0.01,
+                        max: 1.0,
+                        label: ck.similarity.toStringAsFixed(2),
+                        onChanged: (v) => setDialogState(
+                            () => ck = ck.copyWith(similarity: v)),
+                      ),
+                    ),
+                  ],
+                ),
+                Row(
+                  children: [
+                    const Text('Lembut tepi'),
+                    Expanded(
+                      child: Slider(
+                        value: ck.blend,
+                        min: 0.0,
+                        max: 1.0,
+                        label: ck.blend.toStringAsFixed(2),
+                        onChanged: (v) => setDialogState(
+                            () => ck = ck.copyWith(blend: v)),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                const Text('Warna latar pengganti'),
+                const SizedBox(height: 6),
+                swatches(bgColors, ck.bgColor,
+                    (c) => setDialogState(() => ck = ck.copyWith(bgColor: c))),
+                const SizedBox(height: 12),
+                const Text(
+                  'Efek hanya terlihat di hasil export,\nbelum di preview.',
+                  style: TextStyle(fontSize: 11, color: Colors.grey),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Batal'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, 'save'),
+              child: const Text('Simpan'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (action == 'save') {
+      final found = _selectedClipId == null ? null : _findClip(_selectedClipId!);
+      if (found == null) return;
+      final (ti, ci, _) = found;
+      await _replaceClip(ti, ci, clip.copyWith(chromaKey: ck));
+    }
   }
 
   Widget _buildFilterRow() {
@@ -1222,6 +1512,7 @@ class _EditorScreenState extends State<EditorScreen> {
           if (_selectedClipId != null) _buildSpeedRow(),
           if (_selectedClipId != null) _buildFilterRow(),
           if (_selectedClipId != null) _buildFadeRow(),
+          if (_selectedClipId != null) _buildChromaRow(),
           if (_selectedAudioId != null) _buildAudioToolbar(),
           SizedBox(
             height: 260,

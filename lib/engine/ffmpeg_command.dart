@@ -95,6 +95,21 @@ List<String> buildExportCommand(
       ..._fades(clip),
     ];
     filters.add('[$i:v]${videoChain.join(',')}[v$i]');
+    if (clip.chromaKey.enabled) {
+      // Green screen: key out the color, composite over a solid color.
+      // The [v$i] label is reused as the composited output (ffmpeg resolves
+      // labels in order, so downstream concat/xfade keeps working).
+      final ck = clip.chromaKey;
+      final key = '0x${ck.color.toRadixString(16).padLeft(6, '0')}';
+      final bg = '0x${ck.bgColor.toRadixString(16).padLeft(6, '0')}';
+      final outDur = clip.duration.inMilliseconds / clip.speed / 1000;
+      filters.add(
+          '[v$i]chromakey=$key:${_num(ck.similarity)}:${_num(ck.blend)}[v${i}k]');
+      filters.add('color=c=$bg:s=${config.width}x${config.height}'
+          ':d=${_num(outDur)}[v${i}bg]');
+      // format back to yuv420p so concat/xfade sees uniform pixel formats.
+      filters.add('[v${i}bg][v${i}k]overlay,format=yuv420p[v$i]');
+    }
     if (clip.source.hasAudio) {
       final audioChain = <String>[
         'aresample=44100',
@@ -151,14 +166,10 @@ List<String> buildExportCommand(
   for (var i = 0; i < project.overlays.length; i++) {
     final o = project.overlays[i];
     final next = 'ov$i';
-    final mapped = TextOverlay(
-      id: o.id,
-      text: o.text,
-      start: _mapOutputTime(o.start, clips, xfades),
-      end: _mapOutputTime(o.end, clips, xfades),
-      fontSize: o.fontSize,
-    );
-    filters.add('[$videoLabel]${_drawtext(mapped, fontFile)}[$next]');
+    final start = _mapOutputTime(o.start, clips, xfades);
+    final end = _mapOutputTime(o.end, clips, xfades);
+    filters.add(
+        '[$videoLabel]${_drawtext(o, start, end, clips, xfades, fontFile)}[$next]');
     videoLabel = next;
   }
   for (var k = 0; k < project.stickers.length; k++) {
@@ -451,13 +462,29 @@ List<String> _fades(Clip clip) {
   return out;
 }
 
-String _drawtext(TextOverlay overlay, String? fontFile) {
+/// drawtext for a text overlay. Position (x/y center) and font size are
+/// piecewise-linear expressions over t so keyframes animate; a static
+/// overlay collapses to its base pose. Keyframe times are remapped onto the
+/// output timeline (crossfades shift them).
+String _drawtext(TextOverlay o, Duration start, Duration end, List<Clip> clips,
+    List<Duration> xfades, String? fontFile) {
   final font = fontFile != null ? "fontfile='$fontFile':" : '';
-  return 'drawtext=${font}text="${_escape(overlay.text)}"'
-      ':fontsize=${overlay.fontSize.round()}'
+  final pts = <(double, double, double, double)>[
+    (start.inMilliseconds / 1000, o.x, o.y, o.fontSize),
+  ];
+  final kfs = [...o.keyframes]..sort((a, b) => a.time.compareTo(b.time));
+  for (final kf in kfs) {
+    final t = _mapOutputTime(o.start + kf.time, clips, xfades);
+    pts.add((t.inMilliseconds / 1000, kf.x, kf.y, kf.fontSize));
+  }
+  final xe = _piecewise(pts.map((p) => (p.$1, p.$2)).toList());
+  final ye = _piecewise(pts.map((p) => (p.$1, p.$3)).toList());
+  final se = _piecewise(pts.map((p) => (p.$1, p.$4)).toList());
+  return 'drawtext=${font}text="${_escape(o.text)}"'
+      ":fontsize='($se)'"
       ':fontcolor=white:borderw=2:bordercolor=black'
-      ':x=(w-text_w)/2:y=(h-text_h)/2'
-      ":enable='between(t,${_sec(overlay.start)},${_sec(overlay.end)})'";
+      ":x='(($xe)*w-text_w/2)':y='(($ye)*h-text_h/2)'"
+      ":enable='between(t,${_sec(start)},${_sec(end)})'";
 }
 
 /// drawtext text escaping for a double-quoted value: backslash, double

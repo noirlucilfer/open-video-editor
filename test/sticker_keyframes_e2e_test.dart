@@ -14,8 +14,14 @@ Future<List<int>> pixel(String video, String at, int x) async {
 
 void main() {
   test('animated sticker moves across the frame', () async {
+    // Blue square sticker (generated here so the test is self-contained).
+    var r = await Process.run('ffmpeg', [
+      '-y', '-f', 'lavfi', '-i', 'color=c=blue:s=100x100:d=1:r=1',
+      '-frames:v', '1', '/tmp/kf_sticker.png',
+    ]);
+    expect(r.exitCode, 0);
     final src = '/tmp/kf_bg.mp4';
-    var r = await Process.run('ffmpeg', ['-y', '-f', 'lavfi', '-i',
+    r = await Process.run('ffmpeg', ['-y', '-f', 'lavfi', '-i',
         'color=c=red:s=320x240:d=4:r=30', '-f', 'lavfi', '-i',
         'sine=frequency=440:duration=4', '-c:v', 'libx264', '-pix_fmt',
         'yuv420p', '-c:a', 'aac', '-shortest', src]);

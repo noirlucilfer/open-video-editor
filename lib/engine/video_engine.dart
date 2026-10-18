@@ -154,6 +154,51 @@ class MediaSource {
   final bool hasAudio;
 }
 
+/// Green-screen (chroma key) settings for a [Clip].
+///
+/// When enabled, the export keys out [color] via ffmpeg's chromakey filter
+/// and composites the result over a solid [bgColor]. The preview shows the
+/// original clip; the effect is visible in the exported video.
+class ChromaKey {
+  const ChromaKey({
+    this.enabled = false,
+    this.color = 0x00FF00,
+    this.similarity = 0.3,
+    this.blend = 0.1,
+    this.bgColor = 0x000000,
+  });
+
+  /// Whether the effect is applied.
+  final bool enabled;
+
+  /// The key color as 0xRRGGBB.
+  final int color;
+
+  /// How close a pixel must be to the key color (0.01..1.0).
+  final double similarity;
+
+  /// Edge softness (0.0..1.0).
+  final double blend;
+
+  /// Background color as 0xRRGGBB shown where the key is removed.
+  final int bgColor;
+
+  ChromaKey copyWith({
+    bool? enabled,
+    int? color,
+    double? similarity,
+    double? blend,
+    int? bgColor,
+  }) =>
+      ChromaKey(
+        enabled: enabled ?? this.enabled,
+        color: color ?? this.color,
+        similarity: similarity ?? this.similarity,
+        blend: blend ?? this.blend,
+        bgColor: bgColor ?? this.bgColor,
+      );
+}
+
 /// A segment of a [MediaSource] placed on a track.
 ///
 /// [sourceStart] is the trim offset inside the source file;
@@ -171,6 +216,7 @@ class Clip {
     this.filter = VideoFilter.none,
     this.transitionIn = const ClipTransition(),
     this.transitionOut = const ClipTransition(),
+    this.chromaKey = const ChromaKey(),
   }) : assert(speed > 0, 'speed must be positive');
 
   final String id;
@@ -185,6 +231,9 @@ class Clip {
   final VideoFilter filter;
   final ClipTransition transitionIn;
   final ClipTransition transitionOut;
+
+  /// Green-screen settings; inert unless [ChromaKey.enabled].
+  final ChromaKey chromaKey;
 
   Duration get timelineEnd => timelineStart + duration;
 
@@ -202,6 +251,7 @@ class Clip {
     VideoFilter? filter,
     ClipTransition? transitionIn,
     ClipTransition? transitionOut,
+    ChromaKey? chromaKey,
   }) =>
       Clip(
         id: id ?? this.id,
@@ -213,6 +263,7 @@ class Clip {
         filter: filter ?? this.filter,
         transitionIn: transitionIn ?? this.transitionIn,
         transitionOut: transitionOut ?? this.transitionOut,
+        chromaKey: chromaKey ?? this.chromaKey,
       );
 }
 
@@ -225,6 +276,11 @@ class VideoTrack {
 }
 
 /// A text caption shown over the video between [start] and [end].
+/// A text caption burned into the exported video via drawtext.
+///
+/// [x]/[y] are the normalized center position (0..1); [keyframes] animate
+/// position and size over the overlay's lifetime. Times are offsets from
+/// [start].
 class TextOverlay {
   const TextOverlay({
     required this.id,
@@ -232,6 +288,9 @@ class TextOverlay {
     required this.start,
     required this.end,
     this.fontSize = 32,
+    this.x = 0.5,
+    this.y = 0.5,
+    this.keyframes = const [],
   });
 
   final String id;
@@ -240,11 +299,21 @@ class TextOverlay {
   final Duration end;
   final double fontSize;
 
+  /// Normalized center position, 0..1.
+  final double x;
+  final double y;
+
+  /// Animation keyframes, sorted by time. Empty = static.
+  final List<TextKeyframe> keyframes;
+
   TextOverlay copyWith({
     String? text,
     Duration? start,
     Duration? end,
     double? fontSize,
+    double? x,
+    double? y,
+    List<TextKeyframe>? keyframes,
   }) =>
       TextOverlay(
         id: id,
@@ -252,7 +321,59 @@ class TextOverlay {
         start: start ?? this.start,
         end: end ?? this.end,
         fontSize: fontSize ?? this.fontSize,
+        x: x ?? this.x,
+        y: y ?? this.y,
+        keyframes: keyframes ?? this.keyframes,
       );
+}
+
+/// One animation waypoint for a [TextOverlay].
+///
+/// [time] is the offset from the overlay's start; [x]/[y] the normalized
+/// center position; [fontSize] the text size in logical px.
+class TextKeyframe {
+  const TextKeyframe({
+    required this.time,
+    required this.x,
+    required this.y,
+    required this.fontSize,
+  });
+
+  final Duration time;
+  final double x;
+  final double y;
+  final double fontSize;
+}
+
+/// Interpolated pose of a text overlay at [offset] from its start.
+///
+/// The base pose (x, y, fontSize) holds at t=0; poses lerp linearly between
+/// keyframes and the last keyframe's pose holds after it.
+({double x, double y, double fontSize}) textPoseAt(
+    TextOverlay o, Duration offset) {
+  final kfs = [...o.keyframes]..sort((a, b) => a.time.compareTo(b.time));
+  var px = o.x;
+  var py = o.y;
+  var ps = o.fontSize;
+  var pt = Duration.zero;
+  for (final k in kfs) {
+    if (offset < k.time) {
+      final span = (k.time - pt).inMilliseconds;
+      final f = span <= 0
+          ? 1.0
+          : (offset - pt).inMilliseconds / span;
+      return (
+        x: px + (k.x - px) * f,
+        y: py + (k.y - py) * f,
+        fontSize: ps + (k.fontSize - ps) * f,
+      );
+    }
+    px = k.x;
+    py = k.y;
+    ps = k.fontSize;
+    pt = k.time;
+  }
+  return (x: px, y: py, fontSize: ps);
 }
 
 /// A background music / audio track laid over the timeline.
