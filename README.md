@@ -19,7 +19,10 @@ iOS, and Web, with real FFmpeg-powered export on every platform.
   playhead, selectable clips, and draggable trim handles
 - **Trim / split / merge / delete** — pure, unit-tested timeline ops
 - **Text overlays** — add, edit, reposition by dragging; keyframe animation
-  of position and size, rendered in preview and export
+  of position and size, text color + background box, rendered in preview
+  and export
+- **Ken Burns** — per-clip slow zoom in/out with adjustable strength,
+  previewed live and rendered at export
 - **Color filters** — 7 per-clip presets (B&W, Sepia, Invert, Warm, Cool,
   Vintage)
 - **Green screen** — per-clip chroma key with key-color picker, sensitivity
@@ -32,7 +35,8 @@ iOS, and Web, with real FFmpeg-powered export on every platform.
 - **Picture-in-picture** — video overlays with position, size and volume
   control, draggable in preview, composited (video + mixed audio) at export
 - **Project save/load** — projects persist as JSON bundles with their media
-  (save, open, delete from the Project menu)
+  (save, open, delete from the Project menu); drafts auto-save every
+  couple of seconds and restore on launch
 - **Undo/redo** — every edit is revertable, including drag gestures
 - **Transitions** — fade in/out per clip; crossfade between clips in 6
   styles (dissolve, wipe ←/→, slide ↑/↓, circle) with a live dissolve

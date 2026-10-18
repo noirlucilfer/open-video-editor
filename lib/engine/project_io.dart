@@ -76,6 +76,18 @@ ClipTransition _transitionFromJson(Map<String, dynamic> j) => ClipTransition(
           XfadeKind.values, j['xfadeKind'] as String?, XfadeKind.dissolve),
     );
 
+Map<String, dynamic> _kenBurnsToJson(KenBurns k) => {
+      'enabled': k.enabled,
+      'zoomIn': k.zoomIn,
+      'strength': k.strength,
+    };
+
+KenBurns _kenBurnsFromJson(Map<String, dynamic> j) => KenBurns(
+      enabled: j['enabled'] as bool? ?? false,
+      zoomIn: j['zoomIn'] as bool? ?? true,
+      strength: (j['strength'] as num?)?.toDouble() ?? 0.25,
+    );
+
 Map<String, dynamic> _clipToJson(Clip c, Map<String, String> pathMap) => {
       'id': c.id,
       'source': _mediaSourceToJson(MediaSource(
@@ -93,6 +105,7 @@ Map<String, dynamic> _clipToJson(Clip c, Map<String, String> pathMap) => {
       'transitionIn': _transitionToJson(c.transitionIn),
       'transitionOut': _transitionToJson(c.transitionOut),
       'chromaKey': _chromaKeyToJson(c.chromaKey),
+      'kenBurns': _kenBurnsToJson(c.kenBurns),
     };
 
 Clip _clipFromJson(Map<String, dynamic> j) => Clip(
@@ -110,6 +123,8 @@ Clip _clipFromJson(Map<String, dynamic> j) => Clip(
           j['transitionOut'] as Map<String, dynamic>? ?? {}),
       chromaKey: _chromaKeyFromJson(
           j['chromaKey'] as Map<String, dynamic>? ?? {}),
+      kenBurns: _kenBurnsFromJson(
+          j['kenBurns'] as Map<String, dynamic>? ?? {}),
     );
 
 Map<String, dynamic> _textOverlayToJson(TextOverlay o) => {
@@ -120,6 +135,8 @@ Map<String, dynamic> _textOverlayToJson(TextOverlay o) => {
       'fontSize': o.fontSize,
       'x': o.x,
       'y': o.y,
+      'color': o.color,
+      'bgColor': o.bgColor,
       'keyframes': [
         for (final k in o.keyframes)
           {
@@ -139,6 +156,8 @@ TextOverlay _textOverlayFromJson(Map<String, dynamic> j) => TextOverlay(
       fontSize: (j['fontSize'] as num?)?.toDouble() ?? 32,
       x: (j['x'] as num?)?.toDouble() ?? 0.5,
       y: (j['y'] as num?)?.toDouble() ?? 0.5,
+      color: (j['color'] as num?)?.toInt() ?? 0xFFFFFF,
+      bgColor: (j['bgColor'] as num?)?.toInt(),
       keyframes: [
         for (final k in (j['keyframes'] as List? ?? []))
           TextKeyframe(
@@ -328,11 +347,21 @@ Set<String> projectMediaPaths(TimelineProject project) {
 }
 
 Future<Directory> _projectsRoot() async {
+  // Visible for testing: unit tests point this at a temp dir because
+  // path_provider has no plugin implementation under `flutter test`.
+  if (debugProjectsRootOverride != null) {
+    final dir = debugProjectsRootOverride!;
+    if (!await dir.exists()) await dir.create(recursive: true);
+    return dir;
+  }
   final docs = await getApplicationDocumentsDirectory();
   final root = Directory('${docs.path}/ove_projects');
   if (!await root.exists()) await root.create(recursive: true);
   return root;
 }
+
+/// Test-only override for the projects root. Never set in production code.
+Directory? debugProjectsRootOverride;
 
 /// Sanitizes a project name into a directory name.
 String projectDirName(String name) {
@@ -348,7 +377,10 @@ Future<List<String>> listProjects() async {
   await for (final e in root.list()) {
     if (e is Directory &&
         await File('${e.path}/project.json').exists()) {
-      names.add(e.path.split('/').last);
+      final base = e.path.split('/').last;
+      // Skip internal slots like __autosave__.
+      if (base.startsWith('__') && base.endsWith('__')) continue;
+      names.add(base);
     }
   }
   names.sort();
@@ -357,16 +389,22 @@ Future<List<String>> listProjects() async {
 
 /// Saves [project] as [name], copying media into the bundle.
 /// Returns the list of media paths that were missing and kept as-is.
-Future<List<String>> saveProject(String name, TimelineProject project) async {
+Future<List<String>> saveProject(String name, TimelineProject project) =>
+    _saveToDir(projectDirName(name), project);
+
+/// Name of the autosave slot; hidden from the project list.
+const autosaveSlot = '__autosave__';
+
+Future<List<String>> _saveToDir(String dirName, TimelineProject project,
+    {bool wipe = true}) async {
   final root = await _projectsRoot();
-  final dir = Directory('${root.path}/${projectDirName(name)}');
+  final dir = Directory('${root.path}/$dirName');
   final mediaDir = Directory('${dir.path}/media');
-  if (await dir.exists()) await dir.delete(recursive: true);
+  if (wipe && await dir.exists()) await dir.delete(recursive: true);
   await mediaDir.create(recursive: true);
 
   final pathMap = <String, String>{};
   final missing = <String>[];
-  var i = 0;
   for (final src in projectMediaPaths(project)) {
     final file = File(src);
     if (!await file.exists()) {
@@ -374,22 +412,64 @@ Future<List<String>> saveProject(String name, TimelineProject project) async {
       continue;
     }
     var base = src.split('/').last;
-    if (base.isEmpty) base = 'media_$i';
-    // Avoid collisions between same-named files from different folders.
-    var dest = '${mediaDir.path}/$base';
-    while (await File(dest).exists()) {
-      i++;
-      dest = '${mediaDir.path}/${i}_$base';
+    if (base.isEmpty) base = 'media';
+    final srcLen = await file.length();
+    // Reuse an identical copy already in the bundle (makes repeated
+    // autosaves cheap); otherwise pick a non-colliding name.
+    var n = 0;
+    var candidate = '${mediaDir.path}/$base';
+    while (true) {
+      final f = File(candidate);
+      if (!await f.exists()) {
+        await file.copy(candidate);
+        break;
+      }
+      if (await f.length() == srcLen) break; // identical copy present
+      n++;
+      candidate = '${mediaDir.path}/${n}_$base';
     }
-    await file.copy(dest);
-    pathMap[src] = dest;
-    i++;
+    pathMap[src] = candidate;
   }
 
   final json = projectToJson(project, pathMap);
-  await File('${dir.path}/project.json')
-      .writeAsString(jsonEncode(json));
+  await File('${dir.path}/project.json').writeAsString(jsonEncode(json));
   return missing;
+}
+
+/// Writes the project into the autosave slot (no wipe, cheap re-saves).
+Future<void> autosaveProject(TimelineProject project, String? name) async {
+  await _saveToDir(autosaveSlot, project, wipe: false);
+  final root = await _projectsRoot();
+  await File('${root.path}/$autosaveSlot/name.txt')
+      .writeAsString(name ?? '');
+}
+
+/// Loads the autosave slot, or null when there is nothing restorable
+/// (no save yet, or its media is gone).
+Future<({TimelineProject project, String? name})?> loadAutosave() async {
+  final root = await _projectsRoot();
+  final dir = Directory('${root.path}/$autosaveSlot');
+  final file = File('${dir.path}/project.json');
+  if (!await file.exists()) return null;
+  try {
+    final project =
+        projectFromJson(jsonDecode(await file.readAsString()));
+    for (final p in projectMediaPaths(project)) {
+      if (!await File(p).exists()) return null;
+    }
+    final nameFile = File('${dir.path}/name.txt');
+    final name = await nameFile.exists() ? await nameFile.readAsString() : '';
+    return (project: project, name: name.isEmpty ? null : name);
+  } catch (_) {
+    return null;
+  }
+}
+
+/// Deletes the autosave slot.
+Future<void> clearAutosave() async {
+  final root = await _projectsRoot();
+  final dir = Directory('${root.path}/$autosaveSlot');
+  if (await dir.exists()) await dir.delete(recursive: true);
 }
 
 /// Loads a saved project. Throws [ProjectLoadException] when files are gone.

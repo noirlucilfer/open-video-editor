@@ -103,6 +103,7 @@ List<String> buildExportCommand(
       else
         'setpts=PTS-STARTPTS',
       'fps=${config.fps}',
+      ..._kenBurns(clip, config),
       ..._fades(clip),
     ];
     filters.add('[$i:v]${videoChain.join(',')}[v$i]');
@@ -484,6 +485,27 @@ List<String> _colorFilter(VideoFilter filter) {
 /// Fade in/out filters for [clip]. Timings are relative to the trimmed
 /// input (each input starts at its own 0). Crossfades are handled by the
 /// xfade chain, not here.
+/// Ken Burns zoom via the zoompan filter (d=1 keeps frame count).
+/// `in` is the clip-local frame number, so the zoom tracks playback even
+/// after setpts retiming. x/y keep the zoom centered; format is normalized
+/// for downstream concat/xfade. Returns [] when disabled.
+List<String> _kenBurns(Clip clip, ExportConfig config) {
+  final kb = clip.kenBurns;
+  if (!kb.enabled) return [];
+  final d = clip.duration.inMilliseconds / clip.speed / 1000;
+  if (d <= 0) return [];
+  final frames = (d * config.fps).round().clamp(1, 1 << 30);
+  final s = _num(kb.strength);
+  final prog = '(in/$frames)';
+  final z = kb.zoomIn ? '(1+$s*$prog)' : '(1+$s*(1-$prog))';
+  final w = config.width;
+  final h = config.height;
+  return [
+    "zoompan=z='$z':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+        ":d=1:s=${w}x$h:fps=${config.fps},format=yuv420p",
+  ];
+}
+
 List<String> _fades(Clip clip) {
   final out = <String>[];
   final tIn = clip.transitionIn;
@@ -516,12 +538,18 @@ String _drawtext(TextOverlay o, Duration start, Duration end, List<Clip> clips,
   final xe = _piecewise(pts.map((p) => (p.$1, p.$2)).toList());
   final ye = _piecewise(pts.map((p) => (p.$1, p.$3)).toList());
   final se = _piecewise(pts.map((p) => (p.$1, p.$4)).toList());
+  final box = o.bgColor != null
+      ? ':box=1:boxcolor=${_hex(o.bgColor!)}:boxborderw=8'
+      : '';
   return 'drawtext=${font}text="${_escape(o.text)}"'
       ":fontsize='($se)'"
-      ':fontcolor=white:borderw=2:bordercolor=black'
+      ':fontcolor=${_hex(o.color)}:borderw=2:bordercolor=black$box'
       ":x='(($xe)*w-text_w/2)':y='(($ye)*h-text_h/2)'"
       ":enable='between(t,${_sec(start)},${_sec(end)})'";
 }
+
+/// 0xRRGGBB for ffmpeg color options.
+String _hex(int c) => '0x${c.toRadixString(16).padLeft(6, '0')}';
 
 /// drawtext text escaping for a double-quoted value: backslash, double
 /// quote and colon (the option separator) must be escaped.

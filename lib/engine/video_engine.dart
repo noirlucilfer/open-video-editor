@@ -199,6 +199,33 @@ class ChromaKey {
       );
 }
 
+/// Slow zoom animation over a clip (Ken Burns effect).
+///
+/// Export renders it as an animated scale + center crop; the preview
+/// approximates it with a [Transform.scale] driven by the playhead.
+class KenBurns {
+  const KenBurns({
+    this.enabled = false,
+    this.zoomIn = true,
+    this.strength = 0.25,
+  });
+
+  final bool enabled;
+
+  /// true = zoom in (starts normal, ends zoomed); false = zoom out.
+  final bool zoomIn;
+
+  /// Total zoom amount over the clip, 0.05..1.0 (0.25 = 25% bigger at peak).
+  final double strength;
+
+  KenBurns copyWith({bool? enabled, bool? zoomIn, double? strength}) =>
+      KenBurns(
+        enabled: enabled ?? this.enabled,
+        zoomIn: zoomIn ?? this.zoomIn,
+        strength: strength ?? this.strength,
+      );
+}
+
 /// A segment of a [MediaSource] placed on a track.
 ///
 /// [sourceStart] is the trim offset inside the source file;
@@ -217,6 +244,7 @@ class Clip {
     this.transitionIn = const ClipTransition(),
     this.transitionOut = const ClipTransition(),
     this.chromaKey = const ChromaKey(),
+    this.kenBurns = const KenBurns(),
   }) : assert(speed > 0, 'speed must be positive');
 
   final String id;
@@ -235,6 +263,9 @@ class Clip {
   /// Green-screen settings; inert unless [ChromaKey.enabled].
   final ChromaKey chromaKey;
 
+  /// Ken Burns zoom; inert unless [KenBurns.enabled].
+  final KenBurns kenBurns;
+
   Duration get timelineEnd => timelineStart + duration;
 
   /// How much source media this clip consumes (timeline duration * speed).
@@ -252,6 +283,7 @@ class Clip {
     ClipTransition? transitionIn,
     ClipTransition? transitionOut,
     ChromaKey? chromaKey,
+    KenBurns? kenBurns,
   }) =>
       Clip(
         id: id ?? this.id,
@@ -264,6 +296,7 @@ class Clip {
         transitionIn: transitionIn ?? this.transitionIn,
         transitionOut: transitionOut ?? this.transitionOut,
         chromaKey: chromaKey ?? this.chromaKey,
+        kenBurns: kenBurns ?? this.kenBurns,
       );
 }
 
@@ -291,6 +324,8 @@ class TextOverlay {
     this.x = 0.5,
     this.y = 0.5,
     this.keyframes = const [],
+    this.color = 0xFFFFFF,
+    this.bgColor,
   });
 
   final String id;
@@ -306,6 +341,15 @@ class TextOverlay {
   /// Animation keyframes, sorted by time. Empty = static.
   final List<TextKeyframe> keyframes;
 
+  /// Text color as 0xRRGGBB.
+  final int color;
+
+  /// Background box color as 0xRRGGBB; null = transparent.
+  final int? bgColor;
+
+  /// [bgColor] uses a sentinel so the background can be cleared to null.
+  static const _bgUnset = Object();
+
   TextOverlay copyWith({
     String? text,
     Duration? start,
@@ -314,6 +358,8 @@ class TextOverlay {
     double? x,
     double? y,
     List<TextKeyframe>? keyframes,
+    int? color,
+    Object? bgColor = _bgUnset,
   }) =>
       TextOverlay(
         id: id,
@@ -324,6 +370,8 @@ class TextOverlay {
         x: x ?? this.x,
         y: y ?? this.y,
         keyframes: keyframes ?? this.keyframes,
+        color: color ?? this.color,
+        bgColor: bgColor == _bgUnset ? this.bgColor : bgColor as int?,
       );
 }
 

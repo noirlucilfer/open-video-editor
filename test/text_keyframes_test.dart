@@ -109,6 +109,28 @@ void main() {
       expect(fc, contains("fontsize='(32)'"));
       expect(fc, contains("x='((0.5)*w-text_w/2)'"));
       expect(fc, contains("enable='between(t,1.0,5.0)'"));
+      // default styling: white text, no background box
+      expect(fc, contains('fontcolor=0xffffff'));
+      expect(fc, isNot(contains('box=1')));
+    });
+
+    test('text color and background box are rendered', () {
+      final args = buildExportCommand(
+        _project(overlays: [
+          TextOverlay(
+            id: 't',
+            text: 'Hi',
+            start: const Duration(seconds: 1),
+            end: const Duration(seconds: 5),
+            color: 0xFF0000,
+            bgColor: 0x000000,
+          ),
+        ]),
+        ExportConfig(outputPath: '/tmp/o.mp4'),
+      );
+      final fc = _fc(args);
+      expect(fc, contains('fontcolor=0xff0000'));
+      expect(fc, contains('box=1:boxcolor=0x000000:boxborderw=8'));
     });
   });
 

@@ -8,6 +8,8 @@
 // (drag handles), split at the playhead, merged with its neighbour,
 // or deleted.
 
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:audioplayers/audioplayers.dart';
@@ -63,6 +65,9 @@ class _EditorScreenState extends State<EditorScreen> {
   /// Set by drag start; the first move of the gesture pushes history.
   bool _dragNeedsPush = false;
 
+  /// Debounce timer for autosave.
+  Timer? _autosaveTimer;
+
   /// True while ffmpeg.wasm downloads its core on web (first export).
   final _wasmLoading = ValueNotifier<bool>(false);
 
@@ -82,12 +87,14 @@ class _EditorScreenState extends State<EditorScreen> {
     _player = TimelinePlayer();
     _player.addListener(_onPlayerChanged);
     _engine.initialize();
+    _restoreAutosave();
   }
 
   void _onPlayerChanged() => setState(() {});
 
   @override
   void dispose() {
+    _autosaveTimer?.cancel();
     _player.removeListener(_onPlayerChanged);
     _player.dispose();
     _engine.dispose();
@@ -125,6 +132,44 @@ class _EditorScreenState extends State<EditorScreen> {
     _thumbnails.invalidate();
     await _player.setProject(_project);
     if (mounted) setState(() {});
+    _scheduleAutosave();
+  }
+
+  /// Schedules a debounced autosave 2s after the last change.
+  void _scheduleAutosave() {
+    if (kIsWeb) return;
+    _autosaveTimer?.cancel();
+    _autosaveTimer = Timer(const Duration(seconds: 2), () async {
+      try {
+        await autosaveProject(_project, _projectName);
+      } catch (_) {
+        // Autosave is best-effort; never interrupt editing.
+      }
+    });
+  }
+
+  /// Restores the autosaved draft on launch, if there is one.
+  /// Best-effort: never break startup.
+  Future<void> _restoreAutosave() async {
+    if (kIsWeb || widget.initialProject != null) return;
+    try {
+      final saved = await loadAutosave();
+      if (saved == null || !mounted) return;
+      final p = saved.project;
+      if (p.tracks.isEmpty &&
+          p.overlays.isEmpty &&
+          p.stickers.isEmpty &&
+          p.audioTracks.isEmpty &&
+          p.videoOverlays.isEmpty) {
+        return;
+      }
+      _projectName = saved.name;
+      // Don't loop: applying here schedules a (harmless) rewrite.
+      await _applyProject(p);
+      _snack('Draft terakhir dipulihkan otomatis');
+    } catch (_) {
+      // No autosave, unreadable slot, or no path_provider (widget tests).
+    }
   }
 
   Future<void> _undo() async {
@@ -314,6 +359,10 @@ class _EditorScreenState extends State<EditorScreen> {
     _selectedClipId = null;
     _selectedAudioId = null;
     await _applyProject(const TimelineProject());
+    // _applyProject scheduled an autosave; drop it — a fresh project has
+    // nothing to restore.
+    _autosaveTimer?.cancel();
+    await clearAutosave();
   }
 
   /// Copies the current project, replacing only the given parts.
@@ -536,25 +585,64 @@ class _EditorScreenState extends State<EditorScreen> {
   Future<void> _onOverlayTap(TextOverlay overlay) async {
     final controller = TextEditingController(text: overlay.text);
     var fontSize = overlay.fontSize;
+    var color = overlay.color;
+    int? bgColor = overlay.bgColor;
     final keyframes = [...overlay.keyframes]
       ..sort((a, b) => a.time.compareTo(b.time));
     String fmt(Duration d) => '${(d.inMilliseconds / 1000).toStringAsFixed(1)}s';
+    const textColors = [
+      0xFFFFFF,
+      0x000000,
+      0xFF0000,
+      0x00FF00,
+      0x0000FF,
+      0xFFFF00,
+      0xFF00FF,
+      0x00FFFF,
+    ];
+    Widget swatches(
+        List<int> colors, int? selected, ValueChanged<int?> onPick) {
+      return Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: [
+          for (final c in colors)
+            GestureDetector(
+              onTap: () => onPick(c),
+              child: Container(
+                width: 32,
+                height: 32,
+                decoration: BoxDecoration(
+                  color: Color(0xFF000000 | c),
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color:
+                        c == selected ? Colors.white : Colors.grey.shade700,
+                    width: c == selected ? 3 : 1,
+                  ),
+                ),
+              ),
+            ),
+        ],
+      );
+    }
     final action = await showDialog<String>(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) => AlertDialog(
           title: const Text('Teks'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: controller,
-                decoration: const InputDecoration(
-                  labelText: 'Teks',
-                  border: OutlineInputBorder(),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: controller,
+                  decoration: const InputDecoration(
+                    labelText: 'Teks',
+                    border: OutlineInputBorder(),
+                  ),
+                  maxLines: 2,
                 ),
-                maxLines: 2,
-              ),
               Row(
                 children: [
                   const Text('Ukuran'),
@@ -571,6 +659,29 @@ class _EditorScreenState extends State<EditorScreen> {
                   ),
                 ],
               ),
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: Text('Warna teks'),
+              ),
+              const SizedBox(height: 6),
+              swatches(textColors, color,
+                  (c) => setDialogState(() => color = c ?? 0xFFFFFF)),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  const Text('Latar'),
+                  const SizedBox(width: 8),
+                  ChoiceChip(
+                    label: const Text('Tanpa latar'),
+                    selected: bgColor == null,
+                    onSelected: (_) =>
+                        setDialogState(() => bgColor = null),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              swatches(textColors, bgColor,
+                  (c) => setDialogState(() => bgColor = c)),
               if (keyframes.isNotEmpty)
                 Wrap(
                   spacing: 6,
@@ -628,6 +739,7 @@ class _EditorScreenState extends State<EditorScreen> {
               ),
             ],
           ),
+          ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(ctx),
@@ -647,6 +759,8 @@ class _EditorScreenState extends State<EditorScreen> {
           text: newText.isEmpty ? o.text : newText,
           fontSize: fontSize,
           keyframes: keyframes,
+          color: color,
+          bgColor: bgColor,
         );
     if (action == 'delete') {
       await _updateProject(_with(
@@ -909,6 +1023,7 @@ class _EditorScreenState extends State<EditorScreen> {
     _project = _with(videoOverlays: overlays);
     // Lightweight update: don't rebuild audio players while dragging.
     setState(() {});
+    _scheduleAutosave();
   }
 
   Future<void> _onPipTap(VideoOverlay pip) async {
@@ -1183,6 +1298,7 @@ class _EditorScreenState extends State<EditorScreen> {
     _project = _with(overlays: overlays);
     // Lightweight update: don't rebuild audio players while dragging.
     setState(() {});
+    _scheduleAutosave();
   }
 
   /// Moves a sticker by a fractional delta of the video frame.
@@ -1215,6 +1331,7 @@ class _EditorScreenState extends State<EditorScreen> {
     _project = _with(stickers: stickers);
     // Lightweight update: don't rebuild audio players while dragging.
     setState(() {});
+    _scheduleAutosave();
   }
 
   List<StickerOverlay> _activeStickers() {
@@ -1344,6 +1461,22 @@ class _EditorScreenState extends State<EditorScreen> {
     return opacity.clamp(0.0, 1.0);
   }
 
+  /// Ken Burns zoom factor at the playhead for the active clip.
+  /// Mirrors the export math: linear progress over the (speed-adjusted)
+  /// clip duration, zooming around the frame center.
+  double _kenBurnsScale(Clip? clip) {
+    if (clip == null || !clip.kenBurns.enabled) return 1.0;
+    final kb = clip.kenBurns;
+    final dMs = clip.duration.inMilliseconds / clip.speed;
+    if (dMs <= 0) return 1.0;
+    final local =
+        ((_player.position - clip.timelineStart).inMilliseconds / dMs)
+            .clamp(0.0, 1.0);
+    return kb.zoomIn
+        ? 1 + kb.strength * local
+        : 1 + kb.strength * (1 - local);
+  }
+
   List<TextOverlay> _activeOverlays() {
     final pos = _player.position;
     return _project.overlays
@@ -1375,6 +1508,10 @@ class _EditorScreenState extends State<EditorScreen> {
       final opacity = _fadeOpacity(clip);
       if (opacity < 1.0) {
         video = Opacity(opacity: opacity, child: video);
+      }
+      final zoom = _kenBurnsScale(clip);
+      if (zoom != 1.0) {
+        video = Transform.scale(scale: zoom, child: video);
       }
       // True crossfade preview: the incoming clip dissolves in over the
       // outgoing one. (Wipe/slide kinds preview as a dissolve; export
@@ -1443,15 +1580,27 @@ class _EditorScreenState extends State<EditorScreen> {
                     onTap: () => _onOverlayTap(o),
                     child: Align(
                       alignment: Alignment.center,
-                      child: Text(
-                        o.text,
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          fontSize: pose.fontSize,
-                          color: Colors.white,
-                          shadows: const [
-                            Shadow(blurRadius: 8, color: Colors.black87),
-                          ],
+                      child: Container(
+                        padding: o.bgColor != null
+                            ? const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 4)
+                            : EdgeInsets.zero,
+                        decoration: o.bgColor != null
+                            ? BoxDecoration(
+                                color: Color(0xFF000000 | o.bgColor!),
+                                borderRadius: BorderRadius.circular(4),
+                              )
+                            : null,
+                        child: Text(
+                          o.text,
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: pose.fontSize,
+                            color: Color(0xFF000000 | o.color),
+                            shadows: const [
+                              Shadow(blurRadius: 8, color: Colors.black87),
+                            ],
+                          ),
                         ),
                       ),
                     ),
@@ -1537,6 +1686,85 @@ class _EditorScreenState extends State<EditorScreen> {
         ],
       ),
     );
+  }
+
+  Future<void> _showKenBurnsDialog(Clip clip) async {
+    var kb = clip.kenBurns;
+    final action = await showDialog<String>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: const Text('Ken Burns'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SwitchListTile(
+                title: const Text('Aktif'),
+                value: kb.enabled,
+                onChanged: (v) =>
+                    setDialogState(() => kb = kb.copyWith(enabled: v)),
+                contentPadding: EdgeInsets.zero,
+              ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  ChoiceChip(
+                    label: const Text('Zoom in'),
+                    selected: kb.zoomIn,
+                    onSelected: (_) => setDialogState(
+                        () => kb = kb.copyWith(zoomIn: true)),
+                  ),
+                  const SizedBox(width: 8),
+                  ChoiceChip(
+                    label: const Text('Zoom out'),
+                    selected: !kb.zoomIn,
+                    onSelected: (_) => setDialogState(
+                        () => kb = kb.copyWith(zoomIn: false)),
+                  ),
+                ],
+              ),
+              Row(
+                children: [
+                  const Text('Kekuatan'),
+                  Expanded(
+                    child: Slider(
+                      value: kb.strength,
+                      min: 0.05,
+                      max: 1.0,
+                      divisions: 19,
+                      label: '${(kb.strength * 100).round()}%',
+                      onChanged: (v) => setDialogState(
+                          () => kb = kb.copyWith(strength: v)),
+                    ),
+                  ),
+                ],
+              ),
+              const Text(
+                'Zoom lambat sepanjang klip.\nTerlihat di preview dan hasil export.',
+                style: TextStyle(fontSize: 11, color: Colors.grey),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Batal'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, 'save'),
+              child: const Text('Simpan'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (action == 'save') {
+      final found = _selectedClipId == null ? null : _findClip(_selectedClipId!);
+      if (found == null) return;
+      final (ti, ci, _) = found;
+      await _replaceClip(ti, ci, clip.copyWith(kenBurns: kb));
+    }
   }
 
   Future<void> _showChromaDialog(Clip clip) async {
@@ -1714,6 +1942,12 @@ class _EditorScreenState extends State<EditorScreen> {
                 label: const Text('Crossfade'),
                 selected: crossfadeOut,
                 onSelected: _canCrossfade ? (_) => _toggleCrossfade() : null,
+              ),
+              const SizedBox(width: 8),
+              FilterChip(
+                label: const Text('Ken Burns'),
+                selected: clip.kenBurns.enabled,
+                onSelected: (_) => _showKenBurnsDialog(clip),
               ),
             ],
           ),
