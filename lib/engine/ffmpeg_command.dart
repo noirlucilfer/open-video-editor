@@ -78,6 +78,17 @@ List<String> buildExportCommand(
       sticker.path,
     ]);
   }
+  final pipBase = stickerBase + project.stickers.length;
+  for (final pip in project.videoOverlays) {
+    args.addAll([
+      '-ss',
+      _sec(pip.sourceStart),
+      '-t',
+      _sec(pip.end - pip.start),
+      '-i',
+      pip.path,
+    ]);
+  }
 
   final filters = <String>[];
   for (var i = 0; i < clips.length; i++) {
@@ -140,23 +151,34 @@ List<String> buildExportCommand(
   // Background audio tracks: delay to their timeline start, apply volume,
   // then mix under the clip audio. duration=first keeps the project length.
   // Timeline starts are remapped past any earlier crossfades.
+  // PiP overlay audio joins the same mix when audible.
   var audioLabel = 'cata';
-  if (project.audioTracks.isNotEmpty) {
-    final mixInputs = <String>['[cata]'];
-    for (var j = 0; j < project.audioTracks.length; j++) {
-      final track = project.audioTracks[j];
-      final ms =
-          _mapOutputTime(track.timelineStart, clips, xfades).inMilliseconds;
-      final chain = <String>[
-        'aresample=44100',
-        'aformat=channel_layouts=stereo',
-        ..._audioFades(track),
-        'adelay=$ms|$ms',
-        'volume=${track.volume}',
-      ];
-      filters.add('[${audioBase + j}:a]${chain.join(',')}[am$j]');
-      mixInputs.add('[am$j]');
-    }
+  final mixInputs = <String>['[cata]'];
+  for (var j = 0; j < project.audioTracks.length; j++) {
+    final track = project.audioTracks[j];
+    final ms =
+        _mapOutputTime(track.timelineStart, clips, xfades).inMilliseconds;
+    final chain = <String>[
+      'aresample=44100',
+      'aformat=channel_layouts=stereo',
+      ..._audioFades(track),
+      'adelay=$ms|$ms',
+      'volume=${track.volume}',
+    ];
+    filters.add('[${audioBase + j}:a]${chain.join(',')}[am$j]');
+    mixInputs.add('[am$j]');
+  }
+  for (var p = 0; p < project.videoOverlays.length; p++) {
+    final pip = project.videoOverlays[p];
+    if (!pip.hasAudio || pip.volume <= 0) continue;
+    final ms = _mapOutputTime(pip.start, clips, xfades).inMilliseconds;
+    filters.add('[${pipBase + p}:a]aresample=44100,'
+        'aformat=channel_layouts=stereo,'
+        'volume=${pip.volume},'
+        'adelay=$ms|$ms[pa$p]');
+    mixInputs.add('[pa$p]');
+  }
+  if (mixInputs.length > 1) {
     filters.add(
         '${mixInputs.join()}amix=inputs=${mixInputs.length}:duration=first:dropout_transition=0[outa]');
     audioLabel = 'outa';
@@ -198,6 +220,20 @@ List<String> buildExportCommand(
           ":enable='between(t,${_sec(start)},${_sec(end)})'"
           ":eval=frame[$next]");
     }
+    videoLabel = next;
+  }
+  for (var p = 0; p < project.videoOverlays.length; p++) {
+    final pip = project.videoOverlays[p];
+    final next = 'pv$p';
+    final start = _mapOutputTime(pip.start, clips, xfades);
+    final end = _mapOutputTime(pip.end, clips, xfades);
+    final w = (config.width * pip.scale).round().clamp(8, 4096);
+    filters.add('[${pipBase + p}:v]scale=$w:-1,fps=${config.fps},'
+        'setpts=PTS-STARTPTS[pvs$p]');
+    filters.add('[$videoLabel][pvs$p]'
+        "overlay=x='(${_num(pip.x)}*W-w/2)':y='(${_num(pip.y)}*H-h/2)'"
+        ":enable='between(t,${_sec(start)},${_sec(end)})'"
+        '[$next]');
     videoLabel = next;
   }
   filters.add('[$videoLabel]format=yuv420p[outv]');

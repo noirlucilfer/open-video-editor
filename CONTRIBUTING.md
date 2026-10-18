@@ -39,6 +39,8 @@ lib/
 │   ├── ffmpeg_command.dart   # Pure TimelineProject -> FFmpeg argv builder.
 │   │                         # THIS is where export features live. Keep it pure:
 │   │                         # no Process calls, no platform checks.
+│   ├── project_io.dart       # Project save/load: versioned JSON + media bundle.
+│   ├── undo_history.dart     # Generic undo/redo stack for project snapshots.
 │   └── ffmpeg_runner.dart    # Runs the argv: subprocess (desktop/test),
 │                             # ffmpeg-kit (mobile), ffmpeg.wasm (web).
 └── ui/

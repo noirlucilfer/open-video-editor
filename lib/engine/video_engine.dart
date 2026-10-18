@@ -453,6 +453,76 @@ class StickerKeyframe {
   final double scale;
 }
 
+/// A picture-in-picture video laid over the timeline.
+///
+/// Like [StickerOverlay] but for video: the source plays (optionally with
+/// audio) inside [start]..[end], scaled to [scale] (fraction of the export
+/// width) and centered at the normalized ([x], [y]) position.
+class VideoOverlay {
+  const VideoOverlay({
+    required this.id,
+    required this.path,
+    required this.name,
+    required this.start,
+    required this.end,
+    this.sourceStart = Duration.zero,
+    this.x = 0.5,
+    this.y = 0.5,
+    this.scale = 0.35,
+    this.volume = 1.0,
+    this.hasAudio = true,
+  });
+
+  final String id;
+
+  /// File path on mobile, blob URL on web.
+  final String path;
+  final String name;
+  final Duration start;
+  final Duration end;
+
+  /// Offset inside the source video where playback begins.
+  final Duration sourceStart;
+
+  /// Normalized center position, 0..1.
+  final double x;
+  final double y;
+
+  /// Width as a fraction of the export width.
+  final double scale;
+
+  /// 0.0 = muted, 1.0 = full.
+  final double volume;
+
+  /// Whether the source file carries an audio stream (export contract:
+  /// must be accurate, like [MediaSource.hasAudio]).
+  final bool hasAudio;
+
+  VideoOverlay copyWith({
+    Duration? start,
+    Duration? end,
+    Duration? sourceStart,
+    double? x,
+    double? y,
+    double? scale,
+    double? volume,
+    bool? hasAudio,
+  }) =>
+      VideoOverlay(
+        id: id,
+        path: path,
+        name: name,
+        start: start ?? this.start,
+        end: end ?? this.end,
+        sourceStart: sourceStart ?? this.sourceStart,
+        x: x ?? this.x,
+        y: y ?? this.y,
+        scale: scale ?? this.scale,
+        volume: volume ?? this.volume,
+        hasAudio: hasAudio ?? this.hasAudio,
+      );
+}
+
 class StickerOverlay {
   const StickerOverlay({
     required this.id,
@@ -538,12 +608,16 @@ class TimelineProject {
     this.overlays = const [],
     this.audioTracks = const [],
     this.stickers = const [],
+    this.videoOverlays = const [],
   });
 
   final List<VideoTrack> tracks;
   final List<TextOverlay> overlays;
   final List<AudioTrack> audioTracks;
   final List<StickerOverlay> stickers;
+
+  /// Picture-in-picture videos composited over the main timeline.
+  final List<VideoOverlay> videoOverlays;
 
   /// Total duration = end of the last clip on any track.
   Duration get duration {

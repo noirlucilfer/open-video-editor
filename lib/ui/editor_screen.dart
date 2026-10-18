@@ -16,7 +16,10 @@ import 'package:video_player/video_player.dart' hide VideoTrack;
 
 import '../engine/export_font.dart';
 import '../engine/ffmpeg_engine.dart';
+import '../engine/ffmpeg_runner.dart';
+import '../engine/project_io.dart';
 import '../engine/timeline_ops.dart';
+import '../engine/undo_history.dart';
 import '../engine/video_engine.dart';
 import '../media/media_picker.dart';
 import '../media/sticker_image.dart';
@@ -49,6 +52,16 @@ class _EditorScreenState extends State<EditorScreen> {
   String? _selectedAudioId;
   bool _adding = false;
   final _exportProgress = ValueNotifier<double>(0);
+
+  /// Undo/redo snapshots; every [_updateProject] pushes the pre-change
+  /// project, drag gestures push once via [_beginDrag].
+  final _history = UndoStack<TimelineProject>();
+
+  /// Name of the saved project loaded/saved this session, if any.
+  String? _projectName;
+
+  /// Set by drag start; the first move of the gesture pushes history.
+  bool _dragNeedsPush = false;
 
   /// True while ffmpeg.wasm downloads its core on web (first export).
   final _wasmLoading = ValueNotifier<bool>(false);
@@ -101,9 +114,206 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 
   Future<void> _updateProject(TimelineProject project) async {
+    _history.push(_project);
+    await _applyProject(project);
+  }
+
+  /// Replaces the project without touching undo history (undo/redo,
+  /// project load).
+  Future<void> _applyProject(TimelineProject project) async {
     _project = project;
     _thumbnails.invalidate();
     await _player.setProject(_project);
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _undo() async {
+    final prev = _history.undo(_project);
+    if (prev == null) return;
+    await _applyProject(prev);
+  }
+
+  Future<void> _redo() async {
+    final next = _history.redo(_project);
+    if (next == null) return;
+    await _applyProject(next);
+  }
+
+  /// Called on drag start; the first move of the gesture then pushes one
+  /// undo snapshot, so a whole drag is a single undo step.
+  void _beginDrag() => _dragNeedsPush = true;
+
+  void _pushDragHistory() {
+    if (_dragNeedsPush) {
+      _dragNeedsPush = false;
+      _history.push(_project);
+    }
+  }
+
+  Future<void> _onAddMenu(String value) async {
+    switch (value) {
+      case 'video':
+        await _pickAndAdd();
+      case 'pip':
+        await _pickAndAddVideoOverlay();
+      case 'text':
+        await _addTextOverlay();
+      case 'audio':
+        await _pickAndAddAudio();
+      case 'sticker':
+        await _pickAndAddSticker();
+    }
+  }
+
+  Future<void> _onProjectMenu(String value) async {
+    switch (value) {
+      case 'save':
+        await _saveProjectDialog();
+      case 'open':
+        await _openProjectDialog();
+      case 'new':
+        await _newProjectDialog();
+    }
+  }
+
+  void _snack(String msg) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    }
+  }
+
+  Future<void> _saveProjectDialog() async {
+    if (kIsWeb) {
+      _snack('Simpan proyek belum didukung di web');
+      return;
+    }
+    final controller =
+        TextEditingController(text: _projectName ?? 'Proyek tanpa judul');
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Simpan proyek'),
+        content: TextField(
+          controller: controller,
+          decoration: const InputDecoration(
+            labelText: 'Nama proyek',
+            border: OutlineInputBorder(),
+          ),
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Batal'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            child: const Text('Simpan'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (name == null || name.isEmpty) return;
+    try {
+      final missing = await saveProject(name, _project);
+      _projectName = name;
+      setState(() {});
+      _snack(missing.isEmpty
+          ? 'Proyek "$name" tersimpan'
+          : 'Tersimpan, tapi ${missing.length} file media hilang dan dilewati');
+    } catch (e) {
+      _snack('Gagal menyimpan: $e');
+    }
+  }
+
+  Future<void> _openProjectDialog() async {
+    if (kIsWeb) {
+      _snack('Buka proyek belum didukung di web');
+      return;
+    }
+    List<String> names;
+    try {
+      names = await listProjects();
+    } catch (e) {
+      _snack('Gagal membaca daftar proyek: $e');
+      return;
+    }
+    if (names.isEmpty) {
+      _snack('Belum ada proyek tersimpan');
+      return;
+    }
+    if (!mounted) return;
+    final selected = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Buka proyek'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: ListView(
+            shrinkWrap: true,
+            children: [
+              for (final n in names)
+                ListTile(
+                  title: Text(n),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.delete_outline, color: Colors.red),
+                    onPressed: () async {
+                      await deleteProject(n);
+                      if (ctx.mounted) Navigator.pop(ctx, '__deleted__');
+                    },
+                  ),
+                  onTap: () => Navigator.pop(ctx, n),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (selected == null) return;
+    if (selected == '__deleted__') {
+      // Refresh the list after a deletion.
+      await _openProjectDialog();
+      return;
+    }
+    try {
+      final project = await loadProject(selected);
+      _history.clear();
+      _projectName = selected;
+      _selectedClipId = null;
+      _selectedAudioId = null;
+      await _applyProject(project);
+      _snack('Proyek "$selected" dibuka');
+    } on ProjectLoadException catch (e) {
+      _snack('Gagal membuka: $e');
+    }
+  }
+
+  Future<void> _newProjectDialog() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Proyek baru?'),
+        content: const Text(
+            'Proyek saat ini akan ditutup. Simpan dulu kalau belum.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Batal'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Buat baru'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    _history.clear();
+    _projectName = null;
+    _selectedClipId = null;
+    _selectedAudioId = null;
+    await _applyProject(const TimelineProject());
   }
 
   /// Copies the current project, replacing only the given parts.
@@ -112,12 +322,14 @@ class _EditorScreenState extends State<EditorScreen> {
     List<TextOverlay>? overlays,
     List<AudioTrack>? audioTracks,
     List<StickerOverlay>? stickers,
+    List<VideoOverlay>? videoOverlays,
   }) =>
       TimelineProject(
         tracks: tracks ?? _project.tracks,
         overlays: overlays ?? _project.overlays,
         audioTracks: audioTracks ?? _project.audioTracks,
         stickers: stickers ?? _project.stickers,
+        videoOverlays: videoOverlays ?? _project.videoOverlays,
       );
 
   /// Picks a video, probes its duration, and appends it as a clip.
@@ -636,6 +848,156 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 
   /// Picks an image and pins it as a sticker for 3s from the playhead.
+  Future<void> _pickAndAddVideoOverlay() async {
+    if (_adding) return;
+    setState(() => _adding = true);
+    try {
+      final picked = await _picker.pickVideo();
+      if (picked == null) return;
+      final probe = createPlayerController(picked.path);
+      try {
+        await probe.initialize();
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Gagal membaca video: $e')),
+          );
+        }
+        return;
+      }
+      final duration = probe.value.duration;
+      await probe.dispose();
+      if (duration == Duration.zero) return;
+
+      final start = _player.position;
+      // Show at most 5s by default; the user can extend via the dialog later.
+      final showFor = duration < const Duration(seconds: 5)
+          ? duration
+          : const Duration(seconds: 5);
+      final pip = VideoOverlay(
+        id: 'pip-${DateTime.now().millisecondsSinceEpoch}',
+        path: picked.path,
+        name: picked.name,
+        start: start,
+        end: start + showFor,
+      );
+      await _updateProject(
+          _with(videoOverlays: [..._project.videoOverlays, pip]));
+      _snack('Video overlay ditambahkan — geser di preview');
+    } finally {
+      if (mounted) setState(() => _adding = false);
+    }
+  }
+
+  List<VideoOverlay> _activePips() {
+    final pos = _player.position;
+    return _project.videoOverlays
+        .where((p) => pos >= p.start && pos < p.end)
+        .toList();
+  }
+
+  /// Moves a PiP overlay by a fractional delta of the video frame.
+  Future<void> _movePip(String id, double dx, double dy) async {
+    _pushDragHistory();
+    final overlays = _project.videoOverlays.map((p) {
+      if (p.id != id) return p;
+      return p.copyWith(
+        x: (p.x + dx).clamp(0.0, 1.0),
+        y: (p.y + dy).clamp(0.0, 1.0),
+      );
+    }).toList();
+    _project = _with(videoOverlays: overlays);
+    // Lightweight update: don't rebuild audio players while dragging.
+    setState(() {});
+  }
+
+  Future<void> _onPipTap(VideoOverlay pip) async {
+    var scale = pip.scale;
+    var volume = pip.volume;
+    final action = await showDialog<String>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: Text(pip.name, overflow: TextOverflow.ellipsis),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  const Text('Ukuran'),
+                  Expanded(
+                    child: Slider(
+                      value: scale,
+                      min: 0.1,
+                      max: 1.0,
+                      divisions: 18,
+                      label: '${(scale * 100).round()}%',
+                      onChanged: (v) =>
+                          setDialogState(() => scale = v),
+                    ),
+                  ),
+                ],
+              ),
+              Row(
+                children: [
+                  const Text('Volume'),
+                  Expanded(
+                    child: Slider(
+                      value: volume,
+                      min: 0.0,
+                      max: 1.0,
+                      divisions: 10,
+                      label: volume == 0
+                          ? 'Bisukan'
+                          : '${(volume * 100).round()}%',
+                      onChanged: (v) =>
+                          setDialogState(() => volume = v),
+                    ),
+                  ),
+                ],
+              ),
+              const Text(
+                'Geser kotak di preview untuk memindah posisi.\n'
+                'Video asli tampil di hasil export.',
+                style: TextStyle(fontSize: 11, color: Colors.grey),
+                textAlign: TextAlign.center,
+              ),
+              TextButton.icon(
+                icon: const Icon(Icons.delete_outline, color: Colors.red),
+                label: const Text('Hapus',
+                    style: TextStyle(color: Colors.red)),
+                onPressed: () => Navigator.pop(ctx, 'delete'),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Batal'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, 'save'),
+              child: const Text('Simpan'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (action == 'delete') {
+      await _updateProject(_with(
+          videoOverlays: _project.videoOverlays
+              .where((p) => p.id != pip.id)
+              .toList()));
+    } else if (action == 'save') {
+      await _updateProject(_with(
+          videoOverlays: _project.videoOverlays
+              .map((p) => p.id == pip.id
+                  ? p.copyWith(scale: scale, volume: volume)
+                  : p)
+              .toList()));
+    }
+  }
+
   Future<void> _pickAndAddSticker() async {
     if (_adding) return;
     setState(() => _adding = true);
@@ -795,6 +1157,7 @@ class _EditorScreenState extends State<EditorScreen> {
   /// When the playhead sits within 150ms of a keyframe, the drag adjusts
   /// that keyframe; otherwise it moves the base pose (t=0).
   Future<void> _moveText(String id, double dx, double dy) async {
+    _pushDragHistory();
     final pos = _player.position;
     final overlays = _project.overlays.map((o) {
       if (o.id != id) return o;
@@ -826,6 +1189,7 @@ class _EditorScreenState extends State<EditorScreen> {
   /// When the playhead sits within 150ms of a keyframe, the drag adjusts
   /// that keyframe; otherwise it moves the base pose (t=0).
   Future<void> _moveSticker(String id, double dx, double dy) async {
+    _pushDragHistory();
     final pos = _player.position;
     final stickers = _project.stickers.map((s) {
       if (s.id != id) return s;
@@ -1073,6 +1437,7 @@ class _EditorScreenState extends State<EditorScreen> {
                   width: vw,
                   height: 96,
                   child: GestureDetector(
+                    onPanStart: (_) => _beginDrag(),
                     onPanUpdate: (d) =>
                         _moveText(o.id, d.delta.dx / vw, d.delta.dy / vh),
                     onTap: () => _onOverlayTap(o),
@@ -1108,8 +1473,20 @@ class _EditorScreenState extends State<EditorScreen> {
                   videoWidth: vw,
                   videoHeight: vh,
                   onMove: (dx, dy) => _moveSticker(s.id, dx / vw, dy / vh),
+                  onDragStart: _beginDrag,
                 );
               }),
+            for (final pip in _activePips())
+              _DraggablePip(
+                pip: pip,
+                videoLeft: left,
+                videoTop: top,
+                videoWidth: vw,
+                videoHeight: vh,
+                onMove: (dx, dy) => _movePip(pip.id, dx / vw, dy / vh),
+                onDragStart: _beginDrag,
+                onTap: () => _onPipTap(pip),
+              ),
           ],
         );
       },
@@ -1441,24 +1818,19 @@ class _EditorScreenState extends State<EditorScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Open Video Editor'),
+        title: Text(_projectName ?? 'Open Video Editor'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.text_fields),
-            tooltip: 'Tambah teks',
-            onPressed: _addTextOverlay,
+            icon: const Icon(Icons.undo),
+            tooltip: 'Urungkan',
+            onPressed: _history.canUndo ? _undo : null,
           ),
           IconButton(
-            icon: const Icon(Icons.music_note),
-            tooltip: 'Tambah musik',
-            onPressed: _pickAndAddAudio,
+            icon: const Icon(Icons.redo),
+            tooltip: 'Ulangi',
+            onPressed: _history.canRedo ? _redo : null,
           ),
-          IconButton(
-            icon: const Icon(Icons.emoji_emotions_outlined),
-            tooltip: 'Tambah stiker',
-            onPressed: _pickAndAddSticker,
-          ),
-          IconButton(
+          PopupMenuButton<String>(
             icon: _adding
                 ? const SizedBox(
                     width: 20,
@@ -1466,8 +1838,52 @@ class _EditorScreenState extends State<EditorScreen> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                 : const Icon(Icons.add),
-            tooltip: 'Tambah video',
-            onPressed: _pickAndAdd,
+            tooltip: 'Tambah',
+            onSelected: _onAddMenu,
+            itemBuilder: (ctx) => [
+              const PopupMenuItem(
+                value: 'video',
+                child: ListTile(
+                    leading: Icon(Icons.video_library),
+                    title: Text('Video')),
+              ),
+              const PopupMenuItem(
+                value: 'pip',
+                child: ListTile(
+                    leading: Icon(Icons.picture_in_picture_alt),
+                    title: Text('Video overlay (PiP)')),
+              ),
+              const PopupMenuItem(
+                value: 'text',
+                child: ListTile(
+                    leading: Icon(Icons.text_fields),
+                    title: Text('Teks')),
+              ),
+              const PopupMenuItem(
+                value: 'audio',
+                child: ListTile(
+                    leading: Icon(Icons.music_note),
+                    title: Text('Musik')),
+              ),
+              const PopupMenuItem(
+                value: 'sticker',
+                child: ListTile(
+                    leading: Icon(Icons.emoji_emotions_outlined),
+                    title: Text('Stiker')),
+              ),
+            ],
+          ),
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.folder_open),
+            tooltip: 'Proyek',
+            onSelected: _onProjectMenu,
+            itemBuilder: (ctx) => const [
+              PopupMenuItem(
+                  value: 'save', child: Text('Simpan proyek')),
+              PopupMenuItem(
+                  value: 'open', child: Text('Buka proyek')),
+              PopupMenuItem(value: 'new', child: Text('Proyek baru')),
+            ],
           ),
           IconButton(
             icon: const Icon(Icons.ios_share),
@@ -1534,11 +1950,87 @@ class _EditorScreenState extends State<EditorScreen> {
               onOverlayTap: _onOverlayTap,
               onAudioTap: _onAudioTap,
               onStickerTap: _onStickerTap,
+              onPipTap: _onPipTap,
               onTrim: _trimClip,
               onAudioTrim: _trimAudio,
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// A picture-in-picture video placeholder in the preview.
+///
+/// Shows a real thumbnail when the runner can extract one (desktop/mobile);
+/// otherwise a labeled box (web). Draggable like a sticker; the actual
+/// video is composited at export.
+class _DraggablePip extends StatelessWidget {
+  const _DraggablePip({
+    required this.pip,
+    required this.videoLeft,
+    required this.videoTop,
+    required this.videoWidth,
+    required this.videoHeight,
+    required this.onMove,
+    this.onDragStart,
+    this.onTap,
+  });
+
+  final VideoOverlay pip;
+  final double videoLeft;
+  final double videoTop;
+  final double videoWidth;
+  final double videoHeight;
+
+  /// Pixel delta of the drag; converted to fractional by the caller.
+  final void Function(double dx, double dy) onMove;
+  final VoidCallback? onDragStart;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    if (videoWidth <= 0 || videoHeight <= 0) return const SizedBox.shrink();
+    // Width matches the export scale (fraction of export width); height is
+    // a 16:9 estimate — the export preserves the source aspect ratio.
+    final w = videoWidth * pip.scale;
+    final h = w * 9 / 16;
+    final cx = videoLeft + pip.x * videoWidth;
+    final cy = videoTop + pip.y * videoHeight;
+    return Positioned(
+      left: cx - w / 2,
+      top: cy - h / 2,
+      width: w,
+      height: h,
+      child: GestureDetector(
+        onPanStart: (_) => onDragStart?.call(),
+        onPanUpdate: (d) => onMove(d.delta.dx, d.delta.dy),
+        onTap: onTap,
+        child: Container(
+          decoration: BoxDecoration(
+            border: Border.all(color: Colors.white70, width: 1.5),
+            borderRadius: BorderRadius.circular(4),
+            color: Colors.black54,
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(3),
+            child: FutureBuilder<Uint8List?>(
+              future: createDefaultRunner().extractFrame(
+                  pip.path,
+                  pip.sourceStart + const Duration(milliseconds: 500)),
+              builder: (ctx, snap) {
+                if (snap.hasData && snap.data != null) {
+                  return Image.memory(snap.data!, fit: BoxFit.cover);
+                }
+                return const Center(
+                  child: Icon(Icons.picture_in_picture_alt,
+                      color: Colors.white70),
+                );
+              },
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -1556,6 +2048,7 @@ class _DraggableSticker extends StatelessWidget {
     required this.videoWidth,
     required this.videoHeight,
     required this.onMove,
+    this.onDragStart,
   });
 
   final StickerOverlay sticker;
@@ -1566,6 +2059,8 @@ class _DraggableSticker extends StatelessWidget {
 
   /// Pixel delta of the drag; converted to fractional by the caller.
   final void Function(double dx, double dy) onMove;
+
+  final VoidCallback? onDragStart;
 
   @override
   Widget build(BuildContext context) {
@@ -1580,6 +2075,7 @@ class _DraggableSticker extends StatelessWidget {
       width: size,
       height: size,
       child: GestureDetector(
+        onPanStart: (_) => onDragStart?.call(),
         onPanUpdate: (d) => onMove(d.delta.dx, d.delta.dy),
         child: buildStickerImage(sticker.path),
       ),

@@ -32,6 +32,7 @@ class TimelineView extends StatefulWidget {
     this.onOverlayTap,
     this.onAudioTap,
     this.onStickerTap,
+    this.onPipTap,
     this.onTrim,
     this.onAudioTrim,
     this.pixelsPerSecond = 24.0,
@@ -48,6 +49,7 @@ class TimelineView extends StatefulWidget {
   final ValueChanged<TextOverlay>? onOverlayTap;
   final ValueChanged<AudioTrack>? onAudioTap;
   final ValueChanged<StickerOverlay>? onStickerTap;
+  final ValueChanged<VideoOverlay>? onPipTap;
   final void Function(String clipId, TrimEdge edge, Duration newTimelinePos)?
       onTrim;
   final void Function(String audioId, TrimEdge edge, Duration newTimelinePos)?
@@ -125,6 +127,12 @@ class _TimelineViewState extends State<TimelineView> {
                       stickers: widget.project.stickers,
                       pixelsPerSecond: widget.pixelsPerSecond,
                       onStickerTap: widget.onStickerTap,
+                    ),
+                  if (widget.project.videoOverlays.isNotEmpty)
+                    _PipLane(
+                      pips: widget.project.videoOverlays,
+                      pixelsPerSecond: widget.pixelsPerSecond,
+                      onPipTap: widget.onPipTap,
                     ),
                   if (widget.project.tracks.isEmpty)
                     const _EmptyTimelineHint(),
@@ -685,6 +693,62 @@ class _EmptyTimelineHint extends StatelessWidget {
           'Timeline kosong — tambahkan klip untuk mulai mengedit',
           style: TextStyle(color: Colors.grey),
         ),
+      ),
+    );
+  }
+}
+
+/// Lane showing picture-in-picture video overlays, mirroring [_StickerLane].
+class _PipLane extends StatelessWidget {
+  const _PipLane({
+    required this.pips,
+    required this.pixelsPerSecond,
+    this.onPipTap,
+  });
+
+  final List<VideoOverlay> pips;
+  final double pixelsPerSecond;
+  final ValueChanged<VideoOverlay>? onPipTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 36,
+      margin: const EdgeInsets.symmetric(vertical: 2),
+      decoration: BoxDecoration(
+        color: Colors.grey.shade900,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Stack(
+        children: [
+          for (final pip in pips)
+            Positioned(
+              left: pip.start.inMilliseconds / 1000 * pixelsPerSecond,
+              width: (pip.end - pip.start).inMilliseconds /
+                  1000 *
+                  pixelsPerSecond,
+              top: 4,
+              bottom: 4,
+              child: GestureDetector(
+                onTap: () => onPipTap?.call(pip),
+                child: Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 1),
+                  decoration: BoxDecoration(
+                    color: Colors.teal.shade300,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  alignment: Alignment.centerLeft,
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  child: Text(
+                    '🎬 ${pip.name}',
+                    style:
+                        const TextStyle(color: Colors.black, fontSize: 11),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }

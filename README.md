@@ -29,6 +29,11 @@ iOS, and Web, with real FFmpeg-powered export on every platform.
   mixed at export
 - **Stickers** — image overlays, draggable in preview, scaled at export,
   with keyframe animation of position and scale
+- **Picture-in-picture** — video overlays with position, size and volume
+  control, draggable in preview, composited (video + mixed audio) at export
+- **Project save/load** — projects persist as JSON bundles with their media
+  (save, open, delete from the Project menu)
+- **Undo/redo** — every edit is revertable, including drag gestures
 - **Transitions** — fade in/out per clip; crossfade between clips in 6
   styles (dissolve, wipe ←/→, slide ↑/↓, circle) with a live dissolve
   preview and xfade/acrossfade export
